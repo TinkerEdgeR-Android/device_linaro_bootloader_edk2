@@ -64,7 +64,7 @@ STATIC USB_DEVICE_DESCRIPTOR mDeviceDescriptor = {
   0,                                               //BcdDevice
   0,                                               //StrManufacturer
   0,                                               //StrProduct
-  3,                                               //StrSerialNumber
+  0,                                               //StrSerialNumber
   1                                                //NumConfigurations
 };
 
