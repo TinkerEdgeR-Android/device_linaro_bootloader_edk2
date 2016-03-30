@@ -111,6 +111,10 @@ MMC_HOST_INSTANCE* CreateMmcHostInstance (
   MmcHostInstance->BlockIo.WriteBlocks = MmcWriteBlocks;
   MmcHostInstance->BlockIo.FlushBlocks = MmcFlushBlocks;
 
+  MmcHostInstance->EraseBlockProtocol.Revision = EFI_ERASE_BLOCK_PROTOCOL_REVISION;
+  MmcHostInstance->EraseBlockProtocol.EraseLengthGranularity = 1; //TO BE CHANGED, SHIVA
+  MmcHostInstance->EraseBlockProtocol.EraseBlocks = MmcEraseBlocks;
+
   MmcHostInstance->MmcHost = MmcHost;
 
   // Create DevicePath for the new MMC Host
@@ -131,6 +135,7 @@ MMC_HOST_INSTANCE* CreateMmcHostInstance (
   Status = gBS->InstallMultipleProtocolInterfaces (
                 &MmcHostInstance->MmcHandle,
                 &gEfiBlockIoProtocolGuid,&MmcHostInstance->BlockIo,
+                &gEfiEraseBlockProtocolGuid,&MmcHostInstance->EraseBlockProtocol,
                 &gEfiDevicePathProtocolGuid,MmcHostInstance->DevicePath,
                 NULL
                 );
@@ -162,6 +167,7 @@ EFI_STATUS DestroyMmcHostInstance (
   Status = gBS->UninstallMultipleProtocolInterfaces (
         MmcHostInstance->MmcHandle,
         &gEfiBlockIoProtocolGuid,&(MmcHostInstance->BlockIo),
+        &gEfiEraseBlockProtocolGuid,&MmcHostInstance->EraseBlockProtocol,
         &gEfiDevicePathProtocolGuid,MmcHostInstance->DevicePath,
         NULL
         );
@@ -376,6 +382,12 @@ CheckCardsCallback (
                     &gEfiBlockIoProtocolGuid,
                     &(MmcHostInstance->BlockIo),
                     &(MmcHostInstance->BlockIo)
+                    );
+      Status = gBS->ReinstallProtocolInterface (
+                    (MmcHostInstance->MmcHandle),
+                    &gEfiEraseBlockProtocolGuid,
+                    &(MmcHostInstance->EraseBlockProtocol),
+                    &(MmcHostInstance->EraseBlockProtocol)
                     );
 
       if (EFI_ERROR(Status)) {

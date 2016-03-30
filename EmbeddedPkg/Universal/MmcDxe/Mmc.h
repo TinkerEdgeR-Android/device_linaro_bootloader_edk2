@@ -20,6 +20,7 @@
 
 #include <Protocol/DiskIo.h>
 #include <Protocol/BlockIo.h>
+#include <Protocol/EraseBlock.h>
 #include <Protocol/DevicePath.h>
 #include <Protocol/MmcHost.h>
 
@@ -322,6 +323,7 @@ typedef struct _MMC_HOST_INSTANCE {
 
   MMC_STATE                 State;
   EFI_BLOCK_IO_PROTOCOL     BlockIo;
+  EFI_ERASE_BLOCK_PROTOCOL  EraseBlockProtocol;
   CARD_INFO                 CardInfo;
   EFI_MMC_HOST_PROTOCOL     *MmcHost;
 
@@ -463,6 +465,38 @@ EFI_STATUS
 EFIAPI
 MmcFlushBlocks (
   IN EFI_BLOCK_IO_PROTOCOL  *This
+  );
+
+/**
+  Erase a specified number of device blocks.
+
+  This function implements EFI_ERASE_BLOCK_PROTOCOL.EraseBlocks().
+
+  @param  This       Indicates a pointer to the calling context.
+  @param  MediaId    The media ID that the erase request is for.
+  @param  Lba        The starting logical block address to be erased. The caller is
+                     responsible for erasing only legitimate locations.
+  @param  Token      A pointer to the token associated with the transaction.
+  @param  Size       The size in bytes to be erased. This must be a multiple of the
+                     physical block size of the device.
+
+  @retval EFI_SUCCESS           The erase request was queued if Event is not NULL. The data was
+                                erased correctly to the device if the Event is NULL.
+  @retval EFI_WRITE_PROTECTED   The device cannot be erased due to write protection.
+  @retval EFI_DEVICE_ERROR      The device reported an error while attempting to perform the erase operation.
+  @retval EFI_INVALID_PARAMETER The erase request contain LBAs that are not valid.
+  @retval EFI_NO_MEDIA          There is no media in the device.
+  @retval EFI_MEDIA_CHANGED     The MediaId is not for the current media.
+
+**/
+EFI_STATUS
+EFIAPI
+MmcEraseBlocks (
+  IN EFI_BLOCK_IO_PROTOCOL          *This,
+  IN UINT32                         MediaId,
+  IN EFI_LBA                        Lba,
+  IN OUT EFI_ERASE_BLOCK_TOKEN      *Token,
+  IN UINTN                          Size
   );
 
 EFI_STATUS
