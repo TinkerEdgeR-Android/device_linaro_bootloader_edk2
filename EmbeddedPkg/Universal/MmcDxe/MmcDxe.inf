@@ -46,6 +46,7 @@
   gEfiDevicePathProtocolGuid
   gEfiMmcHostProtocolGuid
   gEfiDriverDiagnostics2ProtocolGuid
+  gEfiEraseBlockProtocolGuid
 
 [Depex]
   TRUE
