@@ -17,13 +17,13 @@
 #include <Library/NetLib.h>
 
 #include <Protocol/Bds.h>
+#include <Protocol/BlockIo.h>
 #include <Protocol/UsbIo.h>
 #include <Protocol/DiskIo.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleNetwork.h>
 #include <Protocol/Dhcp4.h>
 #include <Protocol/Mtftp4.h>
-
 
 #define IS_DEVICE_PATH_NODE(node,type,subtype) (((node)->Type == (type)) && ((node)->SubType == (subtype)))
 
@@ -37,6 +37,8 @@ typedef struct {
 #define DHCP_TAG_PARA_LIST  55
 #define DHCP_TAG_NETMASK     1
 #define DHCP_TAG_ROUTER      3
+
+STATIC VOID *gArgs;
 
 /*
    Constant strings and define related to the message indicating the amount of
@@ -1320,6 +1322,218 @@ Error:
   return Status;
 }
 
+#define BOOT_MAGIC        "ANDROID!"
+#define BOOT_MAGIC_LENGTH sizeof (BOOT_MAGIC) - 1
+#define BOOTIMG_KERNEL_ARGS_SIZE 512
+
+
+// Check Val (unsigned) is a power of 2 (has only one bit set)
+#define IS_POWER_OF_2(Val) (Val != 0 && ((Val & (Val - 1)) == 0))
+
+typedef struct {
+  CHAR8   BootMagic[BOOT_MAGIC_LENGTH];
+  UINT32  KernelSize;
+  UINT32  KernelAddress;
+  UINT32  RamdiskSize;
+  UINT32  RamdiskAddress;
+  UINT32  SecondStageBootloaderSize;
+  UINT32  SecondStageBootloaderAddress;
+  UINT32  KernelTaggsAddress;
+  UINT32  PageSize;
+  UINT32  Reserved[2];
+  CHAR8   ProductName[16];
+  CHAR8   KernelArgs[BOOTIMG_KERNEL_ARGS_SIZE];
+  UINT32  Id[32];
+} ANDROID_BOOTIMG_HEADER;
+
+EFI_STATUS
+STATIC LoadAndroidBootImg (
+  IN UINTN                    BufferSize,
+  IN VOID                    *Buffer,
+  IN BDS_LOAD_OPTION         *BdsLoadOption,
+  OUT EFI_PHYSICAL_ADDRESS   *Image,
+  OUT UINTN                  *ImageSize
+  )
+{
+  EFI_STATUS                  Status;
+  EFI_PHYSICAL_ADDRESS        KernelBase, RamdiskBase;
+  ANDROID_BOOTIMG_HEADER     *Header;
+  CHAR16                      KernelArgs[BOOTIMG_KERNEL_ARGS_SIZE];
+
+  Header = (ANDROID_BOOTIMG_HEADER *) Buffer;
+
+  if (AsciiStrnCmp (Header->BootMagic, BOOT_MAGIC, BOOT_MAGIC_LENGTH) != 0) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  if (Header->KernelSize == 0) {
+    return EFI_NOT_FOUND;
+  }
+
+  ASSERT (IS_POWER_OF_2 (Header->PageSize));
+ 
+  KernelBase = Header->KernelAddress;
+  Status = gBS->AllocatePages (AllocateAddress, EfiBootServicesCode,
+                               EFI_SIZE_TO_PAGES (Header->KernelSize), (VOID *)&KernelBase);
+  ASSERT_EFI_ERROR (Status);
+  CopyMem ((VOID *)KernelBase,
+           (CONST VOID *)((UINTN)Buffer + Header->PageSize),
+	   Header->KernelSize);
+
+  RamdiskBase = Header->RamdiskAddress;
+  if (Header->RamdiskSize != 0) {
+    Status = gBS->AllocatePages (AllocateAddress, EfiBootServicesCode,
+                                 EFI_SIZE_TO_PAGES (Header->RamdiskSize), (VOID *)&RamdiskBase);
+    ASSERT_EFI_ERROR (Status);
+    CopyMem ((VOID *)RamdiskBase,
+             (VOID *)((UINTN)Buffer + Header->PageSize + ALIGN_VALUE (Header->KernelSize, Header->PageSize)),
+	     Header->RamdiskSize
+	    );
+  }
+  /* update kernel args */
+  AsciiStrToUnicodeStr (Header->KernelArgs, KernelArgs);
+  if (StrnCmp (KernelArgs, BdsLoadOption->OptionalData,
+               BOOTIMG_KERNEL_ARGS_SIZE) != 0) {
+    ASSERT (BdsLoadOption->OptionalData != NULL);
+    ASSERT (StrSize (KernelArgs) <= BOOTIMG_KERNEL_ARGS_SIZE);
+
+    if (gArgs != NULL) {
+      CopyMem ((VOID *)gArgs,
+               (VOID *)KernelArgs,
+	       StrSize (KernelArgs)
+	      );
+    }
+  }
+  *Image = KernelBase;
+  *ImageSize = Header->KernelSize;
+  return EFI_SUCCESS;
+}
+
+BOOLEAN
+BdsAndroidKernelSupport (
+  IN EFI_DEVICE_PATH  *DevicePath,
+  IN EFI_HANDLE       Handle,
+  IN EFI_DEVICE_PATH  *RemainingDevicePath
+  )
+{
+  // Validate the Remaining Device Path
+  if (IsDevicePathEnd (RemainingDevicePath)) {
+    return FALSE;
+  }
+  if (!IS_DEVICE_PATH_NODE (RemainingDevicePath, MEDIA_DEVICE_PATH,
+			    MEDIA_RELATIVE_OFFSET_RANGE_DP)) {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+STATIC
+BOOLEAN
+CompareDevicePath (
+  IN EFI_DEVICE_PATH    *DevicePath1,
+  IN EFI_DEVICE_PATH    *DevicePath2
+  )
+{
+  UINTN     Size1, Size2;
+
+  Size1 = GetDevicePathSize (DevicePath1);
+  Size2 = GetDevicePathSize (DevicePath2);
+  if (Size1 != Size2)
+    return FALSE;
+  if (Size1 == 0)
+    return FALSE;
+  if (CompareMem (DevicePath1, DevicePath2, Size1) != 0) {
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+STATIC
+EFI_STATUS
+BdsLocateBootOption (
+  IN EFI_DEVICE_PATH    *DevicePath,
+  OUT BDS_LOAD_OPTION  **BdsLoadOption
+  )
+{
+  UINTN             Index;
+  EFI_STATUS        Status;
+  BDS_LOAD_OPTION  *LoadOption;
+
+  for (Index = 0; ; Index++) {
+    Status = BootOptionFromLoadOptionIndex (Index, &LoadOption);
+    if (EFI_ERROR (Status))
+      return Status;
+    if (CompareDevicePath (DevicePath, LoadOption->FilePathList) == FALSE)
+      continue;
+    *BdsLoadOption = LoadOption;
+    return EFI_SUCCESS;
+  }
+  return Status;
+}
+
+EFI_STATUS
+BdsAndroidKernelLoadImage (
+  IN OUT EFI_DEVICE_PATH       **DevicePath,
+  IN     EFI_HANDLE            Handle,
+  IN     EFI_DEVICE_PATH       *RemainingDevicePath,
+  IN     EFI_ALLOCATE_TYPE     Type,
+  IN OUT EFI_PHYSICAL_ADDRESS  *Image,
+  OUT    UINTN                 *ImageSize
+  )
+{
+  EFI_STATUS   Status;
+  EFI_BLOCK_IO_PROTOCOL   *BlockIo;
+  EFI_DEVICE_PATH_PROTOCOL           *Node, *NextNode;
+  HARDDRIVE_DEVICE_PATH        *PartitionPath;
+  UINT32                        MediaId;
+  UINTN                         BlockSize;
+  VOID                         *Buffer;
+  BDS_LOAD_OPTION              *BdsLoadOption;
+
+  /* Find DevicePath node of Partition */
+  NextNode = *DevicePath;
+  do {
+    Node = NextNode;
+    NextNode = NextDevicePathNode (Node);
+  } while (!IS_DEVICE_PATH_NODE (NextNode, MEDIA_DEVICE_PATH,
+			         MEDIA_RELATIVE_OFFSET_RANGE_DP));
+  PartitionPath = (HARDDRIVE_DEVICE_PATH *)Node;
+
+  Status = BdsLocateBootOption (*DevicePath, &BdsLoadOption);
+  if (EFI_ERROR (Status))
+    return Status;
+
+  Status = gBS->OpenProtocol (
+		  Handle,
+		  &gEfiBlockIoProtocolGuid,
+		  (VOID **) &BlockIo,
+		  gImageHandle,
+		  NULL,
+		  EFI_OPEN_PROTOCOL_GET_PROTOCOL
+		  );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "Can't open BlockIo protocol, Status:%r\n", Status));
+    return Status;
+  }
+  MediaId = BlockIo->Media->MediaId;
+  BlockSize = BlockIo->Media->BlockSize;
+  /* Both PartitionStart and PartitionSize are counted as block size. */
+  Buffer = AllocatePages (EFI_SIZE_TO_PAGES(PartitionPath->PartitionSize * BlockSize));
+  if (Buffer == NULL)
+    return EFI_BUFFER_TOO_SMALL;
+
+  /* Load header of boot.img */
+  Status = BlockIo->ReadBlocks (BlockIo, MediaId, 0, PartitionPath->PartitionSize * BlockSize, Buffer);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "Failed to read blocks: %r\n", Status));
+    return Status;
+  }
+  Status = LoadAndroidBootImg (PartitionPath->PartitionSize, Buffer, BdsLoadOption, Image, ImageSize);
+
+  return EFI_SUCCESS;
+}
+
 BDS_FILE_LOADER FileLoaders[] = {
     { BdsFileSystemSupport, BdsFileSystemLoadImage },
     { BdsFirmwareVolumeSupport, BdsFirmwareVolumeLoadImage },
@@ -1327,6 +1541,7 @@ BDS_FILE_LOADER FileLoaders[] = {
     { BdsMemoryMapSupport, BdsMemoryMapLoadImage },
     { BdsPxeSupport, BdsPxeLoadImage },
     { BdsTftpSupport, BdsTftpLoadImage },
+    { BdsAndroidKernelSupport, BdsAndroidKernelLoadImage },
     { NULL, NULL }
 };
 
@@ -1395,6 +1610,8 @@ BdsStartEfiApplication (
   UINTN                        BinarySize;
   EFI_LOADED_IMAGE_PROTOCOL*   LoadedImage;
 
+  // Hack for android kernel args
+  gArgs = LoadOptions;
   // Find the nearest supported file loader
   Status = BdsLoadImageAndUpdateDevicePath (&DevicePath, AllocateAnyPages, &BinaryBuffer, &BinarySize);
   if (EFI_ERROR (Status)) {
