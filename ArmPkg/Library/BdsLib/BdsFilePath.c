@@ -1359,6 +1359,7 @@ STATIC LoadAndroidBootImg (
   EFI_PHYSICAL_ADDRESS        KernelBase, RamdiskBase;
   ANDROID_BOOTIMG_HEADER     *Header;
   CHAR16                      KernelArgs[BOOTIMG_KERNEL_ARGS_SIZE];
+  CHAR16                      InitrdArgs[64];
 
   Header = (ANDROID_BOOTIMG_HEADER *) Buffer;
 
@@ -1397,6 +1398,10 @@ STATIC LoadAndroidBootImg (
     ASSERT (BdsLoadOption->OptionalData != NULL);
     ASSERT (StrSize (KernelArgs) <= BOOTIMG_KERNEL_ARGS_SIZE);
 
+    UnicodeSPrint (InitrdArgs, 64 * sizeof(CHAR16), L" initrd=0x%x,0x%x",
+		   Header->RamdiskAddress, Header->RamdiskSize);
+    StrCat (KernelArgs, InitrdArgs);
+    ASSERT (StrSize (KernelArgs) <= BOOTIMG_KERNEL_ARGS_SIZE);
     if (gArgs != NULL) {
       CopyMem ((VOID *)gArgs,
                (VOID *)KernelArgs,
