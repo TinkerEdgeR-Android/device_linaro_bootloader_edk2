@@ -44,6 +44,7 @@
 
 [Guids]
   gEfiFileInfoGuid
+  gFdtTableGuid
 
 [Protocols]
   gEfiBdsArchProtocolGuid
@@ -53,6 +54,7 @@
   gEfiFirmwareVolume2ProtocolGuid
   gEfiLoadFileProtocolGuid
   gEfiPxeBaseCodeProtocolGuid
+  gEfiBlockIoProtocolGuid
   gEfiDiskIoProtocolGuid
   gEfiUsbIoProtocolGuid
   gEfiLoadedImageProtocolGuid
