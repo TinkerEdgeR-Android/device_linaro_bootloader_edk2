@@ -1515,7 +1515,7 @@ BdsAndroidKernelLoadImage (
   UINT32                        MediaId;
   UINTN                         BlockSize;
   VOID                         *Buffer;
-  BDS_LOAD_OPTION              *BdsLoadOption;
+  BDS_LOAD_OPTION              *BdsLoadOption = NULL;
 
   /* Find DevicePath node of Partition */
   NextNode = *DevicePath;
