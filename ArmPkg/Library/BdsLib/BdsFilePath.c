@@ -25,6 +25,8 @@
 #include <Protocol/Dhcp4.h>
 #include <Protocol/Mtftp4.h>
 
+#include <Guid/Fdt.h>
+
 #define IS_DEVICE_PATH_NODE(node,type,subtype) (((node)->Type == (type)) && ((node)->SubType == (subtype)))
 
 /* Type and defines to set up the DHCP4 options */
@@ -1330,6 +1332,10 @@ Error:
 // Check Val (unsigned) is a power of 2 (has only one bit set)
 #define IS_POWER_OF_2(Val) (Val != 0 && ((Val & (Val - 1)) == 0))
 
+/* It's the hack value of arm64 efi stub kernel */
+#define KERNEL_IMAGE_STEXT_OFFSET     0x12C
+#define KERNEL_IMAGE_RAW_SIZE_OFFSET  0x130
+
 typedef struct {
   CHAR8   BootMagic[BOOT_MAGIC_LENGTH];
   UINT32  KernelSize;
@@ -1356,7 +1362,8 @@ STATIC LoadAndroidBootImg (
   )
 {
   EFI_STATUS                  Status;
-  EFI_PHYSICAL_ADDRESS        KernelBase, RamdiskBase;
+  EFI_PHYSICAL_ADDRESS        KernelBase, RamdiskBase, FdtBase;
+  UINTN                       KernelSize;
   ANDROID_BOOTIMG_HEADER     *Header;
   CHAR16                      KernelArgs[BOOTIMG_KERNEL_ARGS_SIZE];
   CHAR16                      InitrdArgs[64];
@@ -1391,6 +1398,19 @@ STATIC LoadAndroidBootImg (
 	     Header->RamdiskSize
 	    );
   }
+  /* Install Fdt */
+  KernelSize = *(UINT32 *)(KernelBase + KERNEL_IMAGE_STEXT_OFFSET) +
+               *(UINT32 *)(KernelBase + KERNEL_IMAGE_RAW_SIZE_OFFSET);
+  ASSERT (KernelSize < Header->KernelSize);
+
+  /* FDT is at the end of kernel image */
+  FdtBase = KernelBase + KernelSize;
+  Status = gBS->InstallConfigurationTable (
+		  &gFdtTableGuid,
+		  (VOID *)FdtBase
+		  );
+  ASSERT_EFI_ERROR (Status);
+
   /* update kernel args */
   AsciiStrToUnicodeStr (Header->KernelArgs, KernelArgs);
   if (StrnCmp (KernelArgs, BdsLoadOption->OptionalData,
@@ -1409,6 +1429,7 @@ STATIC LoadAndroidBootImg (
 	      );
     }
   }
+
   *Image = KernelBase;
   *ImageSize = Header->KernelSize;
   return EFI_SUCCESS;
