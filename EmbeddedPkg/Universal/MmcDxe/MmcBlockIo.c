@@ -375,3 +375,56 @@ MmcFlushBlocks (
 {
   return EFI_SUCCESS;
 }
+
+EFI_STATUS
+EFIAPI
+MmcEraseBlocks (
+  IN EFI_BLOCK_IO_PROTOCOL          *This,
+  IN UINT32                         MediaId,
+  IN EFI_LBA                        Lba,
+  IN OUT EFI_ERASE_BLOCK_TOKEN      *Token,
+  IN UINTN                          Size
+  )
+{
+  EFI_STATUS             Status;
+  MMC_HOST_INSTANCE      *MmcHostInstance;
+  EFI_MMC_HOST_PROTOCOL  *MmcHost;
+  UINT32                 Response[4];
+  UINTN                  CmdArg;
+
+  MmcHostInstance = MMC_HOST_INSTANCE_FROM_BLOCK_IO_THIS (This);
+  ASSERT (MmcHostInstance != NULL);
+  MmcHost = MmcHostInstance->MmcHost;
+  ASSERT (MmcHost);
+
+  if (This->Media->ReadOnly == TRUE)
+     return EFI_WRITE_PROTECTED;
+
+// EFI_DEVICE_ERROR, EFI_INVALID_PARAMETER
+
+  if (!MmcHostInstance->BlockIo.Media->MediaPresent)
+     return EFI_NO_MEDIA;
+
+  if (This->Media->MediaId != MediaId)
+     return EFI_MEDIA_CHANGED;
+
+  CmdArg = Lba;
+  Status = MmcHost->SendCommand (MmcHost, MMC_CMD35, CmdArg);
+  if (!EFI_ERROR (Status)) {
+     MmcHost->ReceiveResponse (MmcHost, MMC_RESPONSE_TYPE_R1, Response);
+  }
+
+  CmdArg = Lba + Size;
+  Status = MmcHost->SendCommand (MmcHost, MMC_CMD36, CmdArg);
+  if (!EFI_ERROR (Status)) {
+     MmcHost->ReceiveResponse (MmcHost, MMC_RESPONSE_TYPE_R1, Response);
+  }
+
+  CmdArg = 0;
+  Status = MmcHost->SendCommand (MmcHost, MMC_CMD38, CmdArg);
+  if (!EFI_ERROR (Status)) {
+     MmcHost->ReceiveResponse (MmcHost, MMC_RESPONSE_TYPE_R1b, Response);
+  }
+
+  return EFI_SUCCESS;
+}
