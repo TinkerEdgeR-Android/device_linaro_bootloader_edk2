@@ -227,7 +227,7 @@ Set (
   {
     case GPIO_MODE_INPUT:
       // Set the corresponding direction bit to LOW for input
-      MmioAnd8 (RegisterBase + PL061_GPIO_DIR_REG, ~GPIO_PIN_MASK(Gpio));
+      MmioAnd8 (RegisterBase + PL061_GPIO_DIR_REG, ~GPIO_PIN_MASK(Offset));
       break;
 
     case GPIO_MODE_OUTPUT_0:
