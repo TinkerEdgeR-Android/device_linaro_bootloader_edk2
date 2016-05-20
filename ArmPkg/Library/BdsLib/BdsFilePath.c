@@ -1390,7 +1390,7 @@ STATIC LoadAndroidBootImg (
 
   RamdiskBase = Header->RamdiskAddress;
   if (Header->RamdiskSize != 0) {
-    Status = gBS->AllocatePages (AllocateAddress, EfiBootServicesCode,
+    Status = gBS->AllocatePages (AllocateAnyPages, EfiBootServicesCode,
                                  EFI_SIZE_TO_PAGES (Header->RamdiskSize), (VOID *)&RamdiskBase);
     ASSERT_EFI_ERROR (Status);
     CopyMem ((VOID *)RamdiskBase,
