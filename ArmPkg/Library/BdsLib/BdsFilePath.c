@@ -1397,6 +1397,8 @@ STATIC LoadAndroidBootImg (
              (VOID *)((UINTN)Buffer + Header->PageSize + ALIGN_VALUE (Header->KernelSize, Header->PageSize)),
 	     Header->RamdiskSize
 	    );
+    if (RamdiskBase != Header->RamdiskAddress)
+      Header->RamdiskAddress = RamdiskBase;
   }
   /* Install Fdt */
   KernelSize = *(UINT32 *)(KernelBase + KERNEL_IMAGE_STEXT_OFFSET) +
