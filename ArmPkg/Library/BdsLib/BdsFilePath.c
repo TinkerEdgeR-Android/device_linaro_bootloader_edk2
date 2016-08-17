@@ -1367,7 +1367,7 @@ STATIC LoadAndroidBootImg (
   ANDROID_BOOTIMG_HEADER     *Header;
   CHAR16                      KernelArgs[BOOTIMG_KERNEL_ARGS_SIZE];
   CHAR16                      InitrdArgs[64];
-  UINTN                       VariableSize, Length;
+  UINTN                       VariableSize;
   CHAR16                      SerialNoArgs[40], DataUnicode[17];
 
   Header = (ANDROID_BOOTIMG_HEADER *) Buffer;
@@ -1436,8 +1436,7 @@ STATIC LoadAndroidBootImg (
     if (EFI_ERROR (Status)) {
       goto out;
     }
-    Length = StrLen (DataUnicode);
-    DataUnicode[Length] = '\0';
+    DataUnicode[VariableSize / sizeof(CHAR16)] = '\0';
     ZeroMem (SerialNoArgs, 40 * sizeof (CHAR16));
     UnicodeSPrint (SerialNoArgs, 40 * sizeof(CHAR16), L" androidboot.serialno=%s", DataUnicode);
     StrCat (KernelArgs, SerialNoArgs);
