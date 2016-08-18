@@ -1425,7 +1425,7 @@ STATIC LoadAndroidBootImg (
     UnicodeSPrint (InitrdArgs, 64 * sizeof(CHAR16), L" initrd=0x%x,0x%x",
 		   Header->RamdiskAddress, Header->RamdiskSize);
     StrCat (KernelArgs, InitrdArgs);
-    VariableSize = 16 * sizeof (CHAR16);
+    VariableSize = 17 * sizeof (CHAR16);
     Status = gRT->GetVariable (
 		    (CHAR16 *)L"SerialNo",
 		    &gHiKeyVariableGuid,
@@ -1436,7 +1436,7 @@ STATIC LoadAndroidBootImg (
     if (EFI_ERROR (Status)) {
       goto out;
     }
-    DataUnicode[VariableSize / sizeof(CHAR16)] = '\0';
+    DataUnicode[(VariableSize / sizeof(CHAR16)) - 1] = '\0';
     ZeroMem (SerialNoArgs, 40 * sizeof (CHAR16));
     UnicodeSPrint (SerialNoArgs, 40 * sizeof(CHAR16), L" androidboot.serialno=%s", DataUnicode);
     StrCat (KernelArgs, SerialNoArgs);
