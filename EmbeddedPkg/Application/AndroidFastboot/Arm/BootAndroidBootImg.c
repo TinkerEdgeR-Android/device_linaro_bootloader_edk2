@@ -18,6 +18,7 @@
 
 #include <Library/BdsLib.h>
 #include <Library/DevicePathLib.h>
+#include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
 
@@ -55,6 +56,9 @@ STATIC CONST MEMORY_DEVICE_PATH MemoryDevicePathTemplate =
   } // End
 };
 
+#define KERNEL_IMAGE_STEXT_OFFSET     0x12C
+#define KERNEL_IMAGE_RAW_SIZE_OFFSET  0x130
+
 EFI_STATUS
 BootAndroidBootImg (
   IN UINTN    BufferSize,
@@ -69,10 +73,10 @@ BootAndroidBootImg (
   UINTN                               RamdiskSize;
   MEMORY_DEVICE_PATH                  KernelDevicePath;
   MEMORY_DEVICE_PATH*                 RamdiskDevicePath;
-  CHAR16*                             KernelDevicePathTxt;
-  CHAR16*                             RamdiskDevicePathTxt;
-  EFI_DEVICE_PATH*                    LinuxLoaderDevicePath;
-  CHAR16*                             LoadOptions;
+  EFI_PHYSICAL_ADDRESS                FdtBase;
+  CHAR16                              UnicodeArgs[BOOTIMG_KERNEL_ARGS_SIZE];
+  CHAR16                              InitrdArgs[64];
+  BDS_LOAD_OPTION                    *BdsLoadOptions;
 
   Status = ParseAndroidBootImg (
             Buffer,
@@ -88,6 +92,12 @@ BootAndroidBootImg (
 
   KernelDevicePath = MemoryDevicePathTemplate;
 
+  KernelSize = *(UINT32 *)(Kernel + KERNEL_IMAGE_STEXT_OFFSET) +
+               *(UINT32 *)(Kernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
+  FdtBase = (EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KernelSize;
+  Status = gBS->InstallConfigurationTable (&gFdtTableGuid, (VOID *)FdtBase);
+  ASSERT_EFI_ERROR (Status);
+
   // Have to cast to UINTN before casting to EFI_PHYSICAL_ADDRESS in order to
   // appease GCC.
   KernelDevicePath.Node1.StartingAddress = (EFI_PHYSICAL_ADDRESS)(UINTN) Kernel;
@@ -101,44 +111,31 @@ BootAndroidBootImg (
     RamdiskDevicePath->Node1.EndingAddress   = ((EFI_PHYSICAL_ADDRESS)(UINTN) Ramdisk) + RamdiskSize;
   }
 
-  //
-  // Boot Linux using the Legacy Linux Loader
-  //
+  BdsLoadOptions = (BDS_LOAD_OPTION *)AllocateZeroPool (sizeof(BDS_LOAD_OPTION));
+  ASSERT (BdsLoadOptions != NULL);
+  BdsLoadOptions->FilePathList = &KernelDevicePath.Node1.Header;
+  ASSERT (BdsLoadOptions->FilePathList != NULL);
+  BdsLoadOptions->FilePathListLength = GetDevicePathSize (BdsLoadOptions->FilePathList);
+  BdsLoadOptions->Attributes = LOAD_OPTION_ACTIVE | LOAD_OPTION_CATEGORY_BOOT;
 
-  Status = LocateEfiApplicationInFvByGuid (&mLinuxLoaderAppGuid, &LinuxLoaderDevicePath);
-  if (EFI_ERROR (Status)) {
-    Print (L"Couldn't Boot Linux: %d\n", Status);
-    return EFI_DEVICE_ERROR;
-  }
+  AsciiStrToUnicodeStr (KernelArgs, UnicodeArgs);
+  UnicodeSPrint (InitrdArgs, 64 * sizeof(CHAR16), L" initrd=0x%x,0x%x",
+		 (EFI_PHYSICAL_ADDRESS)(UINTN) Ramdisk, RamdiskSize);
+  StrCat (UnicodeArgs, InitrdArgs);
+  BdsLoadOptions->OptionalDataSize = 512;
+  BdsLoadOptions->OptionalData = UnicodeArgs;
+  BdsLoadOptions->Description = NULL;
 
-  KernelDevicePathTxt = ConvertDevicePathToText ((EFI_DEVICE_PATH_PROTOCOL *) &KernelDevicePath, FALSE, FALSE);
-  if (KernelDevicePathTxt == NULL) {
-    return EFI_OUT_OF_RESOURCES;
-  }
 
-  RamdiskDevicePathTxt = ConvertDevicePathToText ((EFI_DEVICE_PATH_PROTOCOL *) RamdiskDevicePath, FALSE, FALSE);
-  if (RamdiskDevicePathTxt == NULL) {
-    return EFI_OUT_OF_RESOURCES;
-  }
-
-  // Initialize Legacy Linux loader command line
-  LoadOptions = CatSPrint (NULL, LINUX_LOADER_COMMAND_LINE, KernelDevicePathTxt, RamdiskDevicePathTxt, KernelArgs);
-  if (LoadOptions == NULL) {
-    return EFI_OUT_OF_RESOURCES;
-  }
-
-  Status = BdsStartEfiApplication (gImageHandle, LinuxLoaderDevicePath, StrSize (LoadOptions), LoadOptions);
+  Status = BdsStartEfiApplication (gImageHandle, BdsLoadOptions->FilePathList, BdsLoadOptions->OptionalDataSize, BdsLoadOptions->OptionalData);
   if (EFI_ERROR (Status)) {
     DEBUG ((EFI_D_ERROR, "Couldn't Boot Linux: %d\n", Status));
     return EFI_DEVICE_ERROR;
   }
 
   if (RamdiskDevicePath) {
-    FreePool (RamdiskDevicePathTxt);
     FreePool (RamdiskDevicePath);
   }
-
-  FreePool (KernelDevicePathTxt);
 
   // If we got here we do a confused face because BootLinuxFdt returned,
   // reporting success.
