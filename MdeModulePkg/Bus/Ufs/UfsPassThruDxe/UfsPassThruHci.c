@@ -2081,10 +2081,18 @@ UfsControllerInit (
   )
 {
   EFI_STATUS             Status;
+  EDKII_UFS_HOST_CONTROLLER_PROTOCOL *UfsHc;
 
   Status = UfsEnableHostController (Private);
   if (EFI_ERROR (Status)) {
     DEBUG ((EFI_D_ERROR, "UfsControllerInit: Enable Host Controller Fails, Status = %r\n", Status));
+    return Status;
+  }
+
+  UfsHc  = Private->UfsHostController;
+  Status = UfsHc->PhyInit (UfsHc);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "UfsControllerInit: Phy Init Fails, Status = %r\n", Status));
     return Status;
   }
 

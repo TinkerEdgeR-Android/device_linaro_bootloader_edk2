@@ -853,6 +853,8 @@ UfsPassThruDriverBindingStart (
     goto Error;
   }
 
+  MicroSecondDelay (100000);
+
   //
   // Get Ufs Device's Lun Info by reading Configuration Descriptor.
   //
