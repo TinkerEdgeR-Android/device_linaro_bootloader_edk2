@@ -16,10 +16,12 @@
 
 #include <Protocol/DevicePath.h>
 
+#include <Library/BaseMemoryLib.h>
 #include <Library/BdsLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
 #include <Library/UefiLib.h>
 
 #define LINUX_LOADER_COMMAND_LINE       L"%s -f %s -c %s"
@@ -77,6 +79,8 @@ BootAndroidBootImg (
   CHAR16                              UnicodeArgs[BOOTIMG_KERNEL_ARGS_SIZE];
   CHAR16                              InitrdArgs[64];
   BDS_LOAD_OPTION                    *BdsLoadOptions;
+  UINTN                               VariableSize;
+  CHAR16                              SerialNoArgs[40], DataUnicode[17];
 
   Status = ParseAndroidBootImg (
             Buffer,
@@ -122,6 +126,17 @@ BootAndroidBootImg (
   UnicodeSPrint (InitrdArgs, 64 * sizeof(CHAR16), L" initrd=0x%x,0x%x",
 		 (EFI_PHYSICAL_ADDRESS)(UINTN) Ramdisk, RamdiskSize);
   StrCat (UnicodeArgs, InitrdArgs);
+
+  VariableSize = 17 * sizeof(CHAR16);
+  Status = gRT->GetVariable ((CHAR16 *)L"SerialNo", &gHiKeyVariableGuid, NULL,
+				&VariableSize, &DataUnicode);
+  if (!EFI_ERROR (Status)) {
+    DataUnicode[(VariableSize / sizeof(CHAR16)) - 1] = '\0';
+    ZeroMem (SerialNoArgs, 40 * sizeof (CHAR16));
+    UnicodeSPrint (SerialNoArgs, 40 * sizeof(CHAR16), L" androidboot.serialno=%s", DataUnicode);
+    StrCat (UnicodeArgs, SerialNoArgs);
+  }
+
   BdsLoadOptions->OptionalDataSize = 512;
   BdsLoadOptions->OptionalData = UnicodeArgs;
   BdsLoadOptions->Description = NULL;
