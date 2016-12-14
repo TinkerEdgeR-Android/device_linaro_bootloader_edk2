@@ -19,6 +19,7 @@
 #include <Protocol/SimpleTextOut.h>
 #include <Protocol/SimpleTextIn.h>
 
+#include <Library/ArmLib.h>
 #include <Library/PcdLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 #include <Library/BaseMemoryLib.h>
@@ -279,16 +280,20 @@ AcceptCmd (
 
     gBS->SignalEvent (mFinishedEvent);
   } else if (MATCH_CMD_LITERAL ("reboot", Command)) {
-    if (MATCH_CMD_LITERAL ("reboot-booloader", Command)) {
+    EFI_RESET_TYPE rtype = EfiResetCold;
+    if (MATCH_CMD_LITERAL ("reboot-bootloader", Command)) {
       // fastboot_protocol.txt:
       //    "reboot-bootloader    Reboot back into the bootloader."
-      // I guess this means reboot back into fastboot mode to save the user
-      // having to do whatever they did to get here again.
-      // Here we just reboot normally.
-      SEND_LITERAL ("INFOreboot-bootloader not supported, rebooting normally.");
+#define REBOOT_REASON_ADDR             0x05F01000
+#define REBOOT_REASON_BOOTLOADER       0x77665500
+      UINT32 *addr = (UINT32*)REBOOT_REASON_ADDR;
+      /* Write REBOOT_BOOTLOADER to the reason address */
+      *addr = REBOOT_REASON_BOOTLOADER;
+      rtype = EfiResetWarm;
+      ArmCleanDataCache();
     }
     SEND_LITERAL ("OKAY");
-    gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
+    gRT->ResetSystem (rtype, EFI_SUCCESS, 0, NULL);
 
     // Shouldn't get here
     DEBUG ((EFI_D_ERROR, "Fastboot: gRT->ResetSystem didn't work\n"));
