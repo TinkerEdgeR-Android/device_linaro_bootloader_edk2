@@ -1441,6 +1441,7 @@ UfsExecScsiCmds (
   UTP_TR_PRD                           *PrdtBase;
   EFI_TPL                              OldTpl;
   UFS_PASS_THRU_TRANS_REQ              *TransReq;
+  UINTN                                TotalLen;
 
   TransReq       = AllocateZeroPool (sizeof (UFS_PASS_THRU_TRANS_REQ));
   if (TransReq == NULL) {
@@ -1509,6 +1510,13 @@ UfsExecScsiCmds (
   PrdtBase = (UTP_TR_PRD*)((UINT8*)TransReq->CmdDescHost + ROUNDUP8 (sizeof (UTP_COMMAND_UPIU)) + ROUNDUP8 (sizeof (UTP_RESPONSE_UPIU)));
   ASSERT (PrdtBase != NULL);
   UfsInitUtpPrdt (PrdtBase, (VOID*)(UINTN)DataBufPhyAddr, DataLen);
+
+  //
+  // Flush & invalidate data cache since CmdDescHost is virtual address
+  // and Command UPIU is updated after Map ().
+  //
+  TotalLen = (TransReq->Trd->PrdtO << 2) + (TransReq->Trd->PrdtL << 2);
+  WriteBackInvalidateDataCacheRange (TransReq->CmdDescHost, TotalLen);
 
   //
   // Insert the async SCSI cmd to the Async I/O list

@@ -26,6 +26,7 @@
 #include <Library/BaseMemoryLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/CacheMaintenanceLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/TimerLib.h>
 
