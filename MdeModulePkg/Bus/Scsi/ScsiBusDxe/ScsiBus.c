@@ -316,6 +316,7 @@ SCSIBusDriverBindingStart (
   SCSI_BUS_DEVICE                       *ScsiBusDev;
   SCSI_TARGET_ID                        ScsiTargetId;
   EFI_DEVICE_PATH_PROTOCOL              *ParentDevicePath;
+  EFI_DEVICE_PATH_PROTOCOL              *DevicePath;
   EFI_SCSI_PASS_THRU_PROTOCOL           *ScsiInterface;
   EFI_EXT_SCSI_PASS_THRU_PROTOCOL       *ExtScsiInterface;
   EFI_SCSI_BUS_PROTOCOL                 *BusIdentify;
@@ -424,6 +425,16 @@ SCSIBusDriverBindingStart (
       ScsiBusDev->ExtScsiInterface = ExtScsiInterface;
     } else {
       ScsiBusDev->ScsiInterface    = ScsiInterface;    
+    }
+    DevicePath = ParentDevicePath;
+    while (1) {
+      if (IsDevicePathEndType (DevicePath)) {
+        break;
+      }
+      if (DevicePath->SubType == MSG_UFS_DP) {
+        return EFI_UNSUPPORTED;
+      }
+      DevicePath = NextDevicePathNode (DevicePath);
     }
 
     //
