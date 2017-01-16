@@ -1476,6 +1476,9 @@ UfsExecScsiCmds (
   if (EFI_ERROR (Status)) {
     return Status;
   }
+  Status = UfsMmioWrite32 (Private, UFS_HC_UTRLBA_OFFSET, (UINT32)(UINTN)TransReq->Trd);
+
+  Status = UfsMmioWrite32 (Private, UFS_HC_UTRLBAU_OFFSET, (UINT32)RShiftU64 ((UINT64)TransReq->Trd, 32));
 
   TransReq->CmdDescSize = TransReq->Trd->PrdtO * sizeof (UINT32) + TransReq->Trd->PrdtL * sizeof (UTP_TR_PRD);
 
