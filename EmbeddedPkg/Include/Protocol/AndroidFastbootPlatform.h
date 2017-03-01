@@ -133,6 +133,18 @@ EFI_STATUS
   IN  CHAR8   *Command
   );
 
+/*
+  Get platform kernel arguments.
+
+  @retval Null terminated CHAR16 string.
+  @retval NULL              If fail to get platform kernel arguments.
+ */
+typedef
+CHAR16 *
+(*FASTBOOT_PLATFORM_GETARGS) (
+  VOID
+  );
+
 typedef struct _FASTBOOT_PLATFORM_PROTOCOL {
   FASTBOOT_PLATFORM_INIT          Init;
   FASTBOOT_PLATFORM_UN_INIT       UnInit;
@@ -140,6 +152,7 @@ typedef struct _FASTBOOT_PLATFORM_PROTOCOL {
   FASTBOOT_PLATFORM_ERASE         ErasePartition;
   FASTBOOT_PLATFORM_GETVAR        GetVar;
   FASTBOOT_PLATFORM_OEM_COMMAND   DoOemCommand;
+  FASTBOOT_PLATFORM_GETARGS       GetKernelArgs;
 } FASTBOOT_PLATFORM_PROTOCOL;
 
 #endif
