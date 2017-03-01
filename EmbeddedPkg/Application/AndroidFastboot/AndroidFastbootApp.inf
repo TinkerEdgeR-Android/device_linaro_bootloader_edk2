@@ -34,6 +34,7 @@
   DebugLib
   DevicePathLib
   DxeServicesTableLib
+  FdtLib
   MemoryAllocationLib
   PcdLib
   PrintLib
@@ -56,3 +57,6 @@
 [Packages.ARM, Packages.AARCH64]
   ArmPkg/ArmPkg.dec
   ArmPlatformPkg/ArmPlatformPkg.dec
+
+[Guids]
+  gFdtTableGuid

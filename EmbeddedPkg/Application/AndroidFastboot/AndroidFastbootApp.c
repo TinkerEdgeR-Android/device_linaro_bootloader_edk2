@@ -216,7 +216,7 @@ HandleBoot (
   // boot we lose control of the system.
   SEND_LITERAL ("OKAY");
 
-  Status = BootAndroidBootImg (mNumDataBytes, mDataBuffer);
+  Status = BootAndroidBootImg (mPlatform, mNumDataBytes, mDataBuffer);
   if (EFI_ERROR (Status)) {
     DEBUG ((EFI_D_ERROR, "Failed to boot downloaded image: %r\n", Status));
   }
