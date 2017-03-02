@@ -12,7 +12,6 @@
 **/
 
 #include "UfsPassThru.h"
-#include <Protocol/DevicePathToText.h>
 
 //
 // Template for Ufs Pass Thru private data.
@@ -787,25 +786,6 @@ UfsPassThruDriverBindingStart (
 
   DEBUG ((EFI_D_INFO, "==UfsPassThru Start== Controller = %x\n", Controller));
 
-  {
-    // We convert back to the text representation of the device Path
-    EFI_DEVICE_PATH_TO_TEXT_PROTOCOL  *DevicePathToTextProtocol;
-    CHAR16                            *DevicePathTxt;
-
-    DevicePathToTextProtocol = NULL;
-    gBS->LocateProtocol(&gEfiDevicePathToTextProtocolGuid, NULL, (VOID **) &DevicePathToTextProtocol);
-    if (DevicePathToTextProtocol != NULL) {
-      DevicePathTxt = DevicePathToTextProtocol->ConvertDevicePathToText (RemainingDevicePath, TRUE, TRUE);
-
-      //DEBUG((EFI_D_ERROR,"Device Path '%s'.\n", DevicePathTxt));
-
-      if (DevicePathTxt != NULL) {
-        FreePool (DevicePathTxt);
-      } else {
-        return EFI_NOT_READY;
-      }
-    }
-  }
   Status  = gBS->OpenProtocol (
                    Controller,
                    &gEdkiiUfsHostControllerProtocolGuid,

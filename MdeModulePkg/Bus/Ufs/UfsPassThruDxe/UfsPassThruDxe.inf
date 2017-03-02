@@ -58,7 +58,6 @@
 [Protocols]
   gEfiExtScsiPassThruProtocolGuid               ## BY_START
   gEdkiiUfsHostControllerProtocolGuid           ## TO_START
-  gEfiDevicePathToTextProtocolGuid
 
 [UserExtensions.TianoCore."ExtraFiles"]
   UfsPassThruExtra.uni
