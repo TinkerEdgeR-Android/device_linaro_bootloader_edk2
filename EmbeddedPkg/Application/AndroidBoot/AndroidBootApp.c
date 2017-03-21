@@ -27,6 +27,8 @@
 
 #define IS_DEVICE_PATH_NODE(node,type,subtype) (((node)->Type == (type)) && ((node)->SubType == (subtype)))
 
+#define ALIGN(x, a)        (((x) + ((a) - 1)) & ~((a) - 1))
+
 STATIC FASTBOOT_PLATFORM_PROTOCOL          *mPlatform;
 
 EFI_STATUS
@@ -46,6 +48,8 @@ AndroidBootAppEntryPoint (
   UINT32                              MediaId, BlockSize;
   VOID                                *Buffer;
   EFI_HANDLE                          Handle;
+  ANDROID_BOOTIMG_HEADER              *Header;
+  UINT32                              Size;
 
   BootPathStr = (CHAR16 *)PcdGetPtr (PcdAndroidBootDevicePath);
   ASSERT (BootPathStr != NULL);
@@ -85,8 +89,29 @@ AndroidBootAppEntryPoint (
 
   MediaId = BlockIo->Media->MediaId;
   BlockSize = BlockIo->Media->BlockSize;
+  Buffer = AllocatePages (1);
+  if (Buffer == NULL) {
+    return EFI_BUFFER_TOO_SMALL;
+  }
+  /* Load header of boot.img */
+  Status = BlockIo->ReadBlocks (
+                      BlockIo,
+                      MediaId,
+                      PartitionPath->PartitionStart,
+                      BlockSize,
+                      Buffer
+                      );
+  Header = (ANDROID_BOOTIMG_HEADER *)Buffer;
+  /* Get real size of abootimg */
+  Size = ALIGN (Header->KernelSize, Header->PageSize) +
+         ALIGN (Header->RamdiskSize, Header->PageSize) +
+         ALIGN (Header->SecondStageBootloaderSize, Header->PageSize) +
+         Header->PageSize;
+  Size = ALIGN (Size, BlockSize);
+  FreePages (Buffer, 1);
+
   /* Both PartitionStart and PartitionSize are counted as block size. */
-  Buffer = AllocatePages (EFI_SIZE_TO_PAGES (PartitionPath->PartitionSize));
+  Buffer = AllocatePages (EFI_SIZE_TO_PAGES (Size));
   if (Buffer == NULL) {
     return EFI_BUFFER_TOO_SMALL;
   }
@@ -95,8 +120,8 @@ AndroidBootAppEntryPoint (
   Status = BlockIo->ReadBlocks (
                       BlockIo,
                       MediaId,
-                      PartitionPath->PartitionStart / BlockSize,
-                      PartitionPath->PartitionSize,
+                      PartitionPath->PartitionStart,
+                      Size,
                       Buffer
                       );
   if (EFI_ERROR (Status)) {
