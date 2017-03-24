@@ -13,6 +13,7 @@
 
 **/
 
+#include <Library/AbootimgLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/BdsLib.h>
 #include <Library/DebugLib.h>
@@ -23,13 +24,9 @@
 #include <Protocol/BlockIo.h>
 #include <Protocol/DevicePathFromText.h>
 
-#include "AndroidBootApp.h"
-
 #define IS_DEVICE_PATH_NODE(node,type,subtype) (((node)->Type == (type)) && ((node)->SubType == (subtype)))
 
 #define ALIGN(x, a)        (((x) + ((a) - 1)) & ~((a) - 1))
-
-STATIC FASTBOOT_PLATFORM_PROTOCOL          *mPlatform;
 
 EFI_STATUS
 EFIAPI
@@ -48,8 +45,7 @@ AndroidBootAppEntryPoint (
   UINT32                              MediaId, BlockSize;
   VOID                                *Buffer;
   EFI_HANDLE                          Handle;
-  ANDROID_BOOTIMG_HEADER              *Header;
-  UINT32                              Size;
+  UINTN                               Size;
 
   BootPathStr = (CHAR16 *)PcdGetPtr (PcdAndroidBootDevicePath);
   ASSERT (BootPathStr != NULL);
@@ -101,12 +97,11 @@ AndroidBootAppEntryPoint (
                       BlockSize,
                       Buffer
                       );
-  Header = (ANDROID_BOOTIMG_HEADER *)Buffer;
-  /* Get real size of abootimg */
-  Size = ALIGN (Header->KernelSize, Header->PageSize) +
-         ALIGN (Header->RamdiskSize, Header->PageSize) +
-         ALIGN (Header->SecondStageBootloaderSize, Header->PageSize) +
-         Header->PageSize;
+  Status = AbootimgGetImgSize (Buffer, &Size);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "Failed to get Abootimg Size: %r\n", Status));
+    return Status;
+  }
   Size = ALIGN (Size, BlockSize);
   FreePages (Buffer, 1);
 
@@ -129,15 +124,8 @@ AndroidBootAppEntryPoint (
     goto EXIT;
   }
 
-  Status = gBS->LocateProtocol (&gAndroidFastbootPlatformProtocolGuid, NULL, (VOID **) &mPlatform);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((EFI_D_ERROR, "Fastboot: Couldn't open Fastboot Platform Protocol: %r\n", Status));
-    goto EXIT;
-  }
-
-  Status = BootAndroidBootImg (mPlatform, PartitionPath->PartitionSize, Buffer);
+  Status = AbootimgBoot (Buffer, Size);
 
 EXIT:
-  FreePages (Buffer, EFI_SIZE_TO_PAGES (PartitionPath->PartitionSize));
   return Status;
 }
