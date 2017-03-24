@@ -12,19 +12,20 @@
 
 **/
 
-#include "AndroidFastbootApp.h"
-
 #include <Protocol/AndroidFastbootTransport.h>
 #include <Protocol/AndroidFastbootPlatform.h>
 #include <Protocol/SimpleTextOut.h>
 #include <Protocol/SimpleTextIn.h>
 
-#include <Library/PcdLib.h>
-#include <Library/UefiRuntimeServicesTableLib.h>
+#include <Library/AbootimgLib.h>
 #include <Library/BaseMemoryLib.h>
-#include <Library/UefiBootServicesTableLib.h>
-#include <Library/UefiApplicationEntryPoint.h>
+#include <Library/PcdLib.h>
 #include <Library/PrintLib.h>
+#include <Library/UefiApplicationEntryPoint.h>
+#include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
+
+#define ANDROID_FASTBOOT_VERSION "0.4"
 
 /*
  * UEFI Application using the FASTBOOT_TRANSPORT_PROTOCOL and
@@ -216,7 +217,7 @@ HandleBoot (
   // boot we lose control of the system.
   SEND_LITERAL ("OKAY");
 
-  Status = BootAndroidBootImg (mPlatform, mNumDataBytes, mDataBuffer);
+  Status = AbootimgBoot (mDataBuffer, mNumDataBytes);
   if (EFI_ERROR (Status)) {
     DEBUG ((EFI_D_ERROR, "Failed to boot downloaded image: %r\n", Status));
   }

@@ -22,12 +22,9 @@
 
 [Sources.common]
   AndroidFastbootApp.c
-  AndroidBootImg.c
-
-[Sources.ARM, Sources.AARCH64]
-  Arm/BootAndroidBootImg.c
 
 [LibraryClasses]
+  AbootimgLib
   BaseLib
   BaseMemoryLib
   BdsLib
