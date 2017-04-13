@@ -25,7 +25,34 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
-#define ANDROID_FASTBOOT_VERSION "0.4"
+#define ANDROID_FASTBOOT_VERSION "0.5"
+
+#define SPARSE_HEADER_MAGIC         0xED26FF3A
+#define CHUNK_TYPE_RAW              0xCAC1
+#define CHUNK_TYPE_FILL             0xCAC2
+#define CHUNK_TYPE_DONT_CARE        0xCAC3
+#define CHUNK_TYPE_CRC32            0xCAC4
+
+#define FILL_BUF_SIZE               1024
+
+typedef struct _SPARSE_HEADER {
+  UINT32       Magic;
+  UINT16       MajorVersion;
+  UINT16       MinorVersion;
+  UINT16       FileHeaderSize;
+  UINT16       ChunkHeaderSize;
+  UINT32       BlockSize;
+  UINT32       TotalBlocks;
+  UINT32       TotalChunks;
+  UINT32       ImageChecksum;
+} SPARSE_HEADER;
+
+typedef struct _CHUNK_HEADER {
+  UINT16       ChunkType;
+  UINT16       Reserved1;
+  UINT32       ChunkSize;
+  UINT32       TotalSize;
+} CHUNK_HEADER;
 
 /*
  * UEFI Application using the FASTBOOT_TRANSPORT_PROTOCOL and
@@ -139,13 +166,83 @@ HandleDownload (
 }
 
 STATIC
+EFI_STATUS
+FlashSparseImage (
+  IN CHAR8         *PartitionName,
+  IN SPARSE_HEADER *SparseHeader
+  )
+{
+  EFI_STATUS        Status;
+  UINTN             Chunk, Offset = 0, Index;
+  VOID             *Image;
+  CHUNK_HEADER     *ChunkHeader;
+  UINT32            FillBuf[FILL_BUF_SIZE];
+  CHAR16            OutputString[FASTBOOT_STRING_MAX_LENGTH];
+
+  Image = (VOID *)SparseHeader;
+  Image += SparseHeader->FileHeaderSize;
+  for (Chunk = 0; Chunk < SparseHeader->TotalChunks; Chunk++) {
+    ChunkHeader = (CHUNK_HEADER *)Image;
+    DEBUG ((DEBUG_INFO, "Chunk #%d - Type: 0x%x Size: %d TotalSize: %d Offset %d\n",
+            (Chunk+1), ChunkHeader->ChunkType, ChunkHeader->ChunkSize,
+            ChunkHeader->TotalSize, Offset));
+    Image += sizeof (CHUNK_HEADER);
+    switch (ChunkHeader->ChunkType) {
+    case CHUNK_TYPE_RAW:
+      Status = mPlatform->FlashPartitionEx (
+                            PartitionName,
+                            Offset,
+                            ChunkHeader->ChunkSize * SparseHeader->BlockSize,
+                            Image
+                            );
+      if (EFI_ERROR (Status)) {
+        return Status;
+      }
+      Image += ChunkHeader->ChunkSize * SparseHeader->BlockSize;
+      Offset += ChunkHeader->ChunkSize * SparseHeader->BlockSize;
+      break;
+    case CHUNK_TYPE_FILL:
+      SetMem32 (FillBuf, FILL_BUF_SIZE * sizeof (UINT32), *(UINT32 *)Image);
+      Image += sizeof (UINT32);
+      for (Index = 0; Index < ChunkHeader->ChunkSize; Index++) {
+        Status = mPlatform->FlashPartitionEx (
+                              PartitionName,
+                              Offset,
+                              SparseHeader->BlockSize,
+                              FillBuf
+                              );
+        if (EFI_ERROR (Status)) {
+          return Status;
+        }
+        Offset += SparseHeader->BlockSize;
+      }
+      break;
+    case CHUNK_TYPE_DONT_CARE:
+      Offset += ChunkHeader->ChunkSize * SparseHeader->BlockSize;
+      break;
+    default:
+      UnicodeSPrint (
+        OutputString,
+        sizeof (OutputString),
+        L"Unsupported Chunk Type:0x%x\n",
+        ChunkHeader->ChunkType
+        );
+      mTextOut->OutputString (mTextOut, OutputString);
+      break;
+    }
+  }
+  return Status;
+}
+
+STATIC
 VOID
 HandleFlash (
   IN CHAR8 *PartitionName
   )
 {
-  EFI_STATUS  Status;
-  CHAR16      OutputString[FASTBOOT_STRING_MAX_LENGTH];
+  EFI_STATUS        Status;
+  CHAR16            OutputString[FASTBOOT_STRING_MAX_LENGTH];
+  SPARSE_HEADER    *SparseHeader;
 
   // Build output string
   UnicodeSPrint (OutputString, sizeof (OutputString), L"Flashing partition %a\r\n", PartitionName);
@@ -157,11 +254,25 @@ HandleFlash (
     return;
   }
 
-  Status = mPlatform->FlashPartition (
-                        PartitionName,
-                        mNumDataBytes,
-                        mDataBuffer
-                        );
+  SparseHeader = (SPARSE_HEADER *)mDataBuffer;
+  if (SparseHeader->Magic == SPARSE_HEADER_MAGIC) {
+    DEBUG ((DEBUG_INFO, "Sparse Magic: 0x%x Major: %d Minor: %d fhs: %d chs: %d bs: %d tbs: %d tcs: %d checksum: %d \n",
+                SparseHeader->Magic, SparseHeader->MajorVersion, SparseHeader->MinorVersion,  SparseHeader->FileHeaderSize,
+                SparseHeader->ChunkHeaderSize, SparseHeader->BlockSize, SparseHeader->TotalBlocks,
+                SparseHeader->TotalChunks, SparseHeader->ImageChecksum));
+    if (SparseHeader->MajorVersion != 1) {
+        DEBUG ((DEBUG_ERROR, "Sparse image version %d.%d not supported.\n",
+                    SparseHeader->MajorVersion, SparseHeader->MinorVersion));
+        return;
+    }
+    Status = FlashSparseImage (PartitionName, SparseHeader);
+  } else {
+    Status = mPlatform->FlashPartition (
+                          PartitionName,
+                          mNumDataBytes,
+                          mDataBuffer
+                          );
+  }
   if (Status == EFI_NOT_FOUND) {
     SEND_LITERAL ("FAILNo such partition.");
     mTextOut->OutputString (mTextOut, L"No such partition.\r\n");
