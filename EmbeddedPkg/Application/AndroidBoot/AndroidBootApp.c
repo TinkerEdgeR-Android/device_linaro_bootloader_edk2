@@ -111,17 +111,47 @@ AndroidBootAppEntryPoint (
     return EFI_BUFFER_TOO_SMALL;
   }
 
-  /* Load header of boot.img */
-  Status = BlockIo->ReadBlocks (
-                      BlockIo,
-                      MediaId,
-                      PartitionPath->PartitionStart,
-                      Size,
-                      Buffer
-                      );
-  if (EFI_ERROR (Status)) {
-    DEBUG ((EFI_D_ERROR, "Failed to read blocks: %r\n", Status));
-    goto EXIT;
+  {
+  #if 0
+    /* Load header of boot.img */
+    Status = BlockIo->ReadBlocks (
+                        BlockIo,
+                        MediaId,
+                        PartitionPath->PartitionStart,
+                        Size,
+                        Buffer
+                        );
+    if (EFI_ERROR (Status)) {
+      DEBUG ((EFI_D_ERROR, "Failed to read blocks: %r\n", Status));
+      goto EXIT;
+    }
+  #else
+  #define SMALL_SIZE            (8 * 1024 * 1024)
+
+    UINTN   Offset = 0, Count;
+    for (; Size > 0; ) {
+      if (Size > SMALL_SIZE) {
+        Count = SMALL_SIZE;
+        Size = Size - Count;
+      } else {
+        Count = Size;
+        Size = 0;
+      }
+      Status = BlockIo->ReadBlocks (
+                          BlockIo,
+                          MediaId,
+                          PartitionPath->PartitionStart + (Offset / 4096),
+                          Count,
+                          Buffer + Offset
+                          );
+      if (EFI_ERROR (Status)) {
+        DEBUG ((EFI_D_ERROR, "Failed to read blocks: %r at Offset 0x%x\n", Status, Offset));
+        ASSERT (0);
+        goto EXIT;
+      }
+      Offset += Count;
+    }
+  #endif
   }
 
   Status = AbootimgBoot (Buffer, Size);
