@@ -5400,11 +5400,11 @@ DetermineInstallEraseBlock (
   if (CommandStatus == EFI_SUCCESS) {
     //
     // Universal Flash Storage (UFS) Version 2.0
-    // Section 11.3.9.2
+    // Section 11.3.9.2 & Section 12.2.3
     // Bits TPE and TPRZ should both be set to enable the erase feature on UFS.
+    // Setting bit TPE and clearing bit TPRZ to enable the discard feature on UFS.
     //
-    if (((CapacityData16->LowestAlignLogic2 & BIT7) == 0) ||
-        ((CapacityData16->LowestAlignLogic2 & BIT6) == 0)) {
+    if ((CapacityData16->LowestAlignLogic2 & BIT7) == 0) {
       DEBUG ((
         EFI_D_VERBOSE,
         "ScsiDisk EraseBlock: Either TPE or TPRZ is not set: 0x%x.\n",
