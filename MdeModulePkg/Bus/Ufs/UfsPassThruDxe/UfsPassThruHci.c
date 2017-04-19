@@ -2113,6 +2113,12 @@ UfsControllerInit (
     return Status;
   }
 
+  Status = UfsHc->PhySetPowerMode (UfsHc);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "UfsControllerInit: Phy Set Power Mode Fails, Status = %r\n", Status));
+    return Status;
+  }
+
   Status = UfsInitTaskManagementRequestList (Private);
   if (EFI_ERROR (Status)) {
     DEBUG ((EFI_D_ERROR, "UfsControllerInit: Task management list initialization Fails, Status = %r\n", Status));
