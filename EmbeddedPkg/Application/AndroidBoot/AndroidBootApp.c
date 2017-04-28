@@ -93,7 +93,7 @@ AndroidBootAppEntryPoint (
   Status = BlockIo->ReadBlocks (
                       BlockIo,
                       MediaId,
-                      PartitionPath->PartitionStart,
+                      0,
                       BlockSize,
                       Buffer
                       );
@@ -115,7 +115,7 @@ AndroidBootAppEntryPoint (
   Status = BlockIo->ReadBlocks (
                       BlockIo,
                       MediaId,
-                      PartitionPath->PartitionStart,
+                      0,
                       Size,
                       Buffer
                       );
