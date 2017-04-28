@@ -41,7 +41,6 @@ AndroidBootAppEntryPoint (
   EFI_DEVICE_PATH                     *DevicePath;
   EFI_DEVICE_PATH_PROTOCOL            *Node, *NextNode;
   EFI_BLOCK_IO_PROTOCOL               *BlockIo;
-  HARDDRIVE_DEVICE_PATH               *PartitionPath;
   UINT32                              MediaId, BlockSize;
   VOID                                *Buffer;
   EFI_HANDLE                          Handle;
@@ -59,7 +58,6 @@ AndroidBootAppEntryPoint (
   while (1) {
     Node = NextNode;
     if (IS_DEVICE_PATH_NODE (Node, MEDIA_DEVICE_PATH, MEDIA_HARDDRIVE_DP)) {
-      PartitionPath = (HARDDRIVE_DEVICE_PATH *)Node;
       break;
     }
     NextNode = NextDevicePathNode (Node);
