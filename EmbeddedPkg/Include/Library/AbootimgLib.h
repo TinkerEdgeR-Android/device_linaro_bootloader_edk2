@@ -26,7 +26,7 @@
 #define BOOTIMG_KERNEL_ARGS_SIZE          512
 
 #define BOOT_MAGIC                        "ANDROID!"
-#define BOOT_MAGIC_LENGTH                 sizeof (BOOT_MAGIC) - 1
+#define BOOT_MAGIC_LENGTH                 (sizeof (BOOT_MAGIC) - 1)
 
 /* It's the value of arm64 efi stub kernel */
 #define KERNEL_IMAGE_STEXT_OFFSET         0x12C
