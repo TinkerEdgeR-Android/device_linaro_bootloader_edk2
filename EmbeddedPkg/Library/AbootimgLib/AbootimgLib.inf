@@ -41,5 +41,8 @@
   MdePkg/MdePkg.dec
   EmbeddedPkg/EmbeddedPkg.dec
 
+[Protocols]
+  gAbootimgProtocolGuid
+
 [Guids]
   gFdtTableGuid

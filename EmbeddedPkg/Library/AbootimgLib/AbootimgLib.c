@@ -18,6 +18,7 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
 
+#include <Protocol/Abootimg.h>
 #include <Protocol/LoadedImage.h>
 
 #include <libfdt.h>
@@ -29,6 +30,8 @@ typedef struct {
   MEMMAP_DEVICE_PATH                      Node1;
   EFI_DEVICE_PATH_PROTOCOL                End;
 } MEMORY_DEVICE_PATH;
+
+STATIC ABOOTIMG_PROTOCOL                 *mAbootimg;
 
 STATIC CONST MEMORY_DEVICE_PATH MemoryDevicePathTemplate =
 {
@@ -156,11 +159,19 @@ AbootimgInstallFdt (
 {
   VOID                      *Ramdisk;
   UINTN                      RamdiskSize;
-  UINTN                      FdtSize, Index;
-  UINT8                     *FdtPtr;
   CHAR8                      ImgKernelArgs[BOOTIMG_KERNEL_ARGS_SIZE];
   INTN                       err;
   EFI_STATUS                 Status;
+  EFI_PHYSICAL_ADDRESS       NewFdtBase;
+
+  Status = gBS->LocateProtocol (&gAbootimgProtocolGuid, NULL, (VOID **) &mAbootimg);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
 
   Status = AbootimgGetRamdiskInfo (
             BootImg,
@@ -186,16 +197,21 @@ AbootimgInstallFdt (
     (UINTN)Ramdisk, (UINTN)RamdiskSize
     );
 
-  FdtPtr = (UINT8 *)(FdtBase + FDT_SIZE_OFFSET);
-  for (Index = 0, FdtSize = 0; Index < sizeof (UINT32); Index++) {
-    FdtSize |= *FdtPtr << ((sizeof (UINT32) - 1 - Index) * 8);
-    FdtPtr++;
+  // Append platform kernel arguments
+  Status = mAbootimg->AppendArgs (KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = mAbootimg->UpdateDtb (FdtBase, &NewFdtBase);
+  if (EFI_ERROR (Status)) {
+    return Status;
   }
 
   //
-  // Sanity checks on the original FDT blob.
+  // Sanity checks on the new FDT blob.
   //
-  err = fdt_check_header ((VOID*)(UINTN)FdtBase);
+  err = fdt_check_header ((VOID*)(UINTN)NewFdtBase);
   if (err != 0) {
     Print (L"ERROR: Device Tree header not valid (err:%d)\n", err);
     return EFI_INVALID_PARAMETER;
@@ -203,7 +219,7 @@ AbootimgInstallFdt (
 
   Status = gBS->InstallConfigurationTable (
                   &gFdtTableGuid,
-                  (VOID *)(UINTN)FdtBase
+                  (VOID *)(UINTN)NewFdtBase
                   );
   return Status;
 }
