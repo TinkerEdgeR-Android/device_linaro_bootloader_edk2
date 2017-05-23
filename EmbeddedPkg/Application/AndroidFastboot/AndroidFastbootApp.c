@@ -172,7 +172,7 @@ FlashSparseImage (
   IN SPARSE_HEADER *SparseHeader
   )
 {
-  EFI_STATUS        Status;
+  EFI_STATUS        Status = EFI_SUCCESS;
   UINTN             Chunk, Offset = 0, Index;
   VOID             *Image;
   CHUNK_HEADER     *ChunkHeader;
@@ -273,16 +273,20 @@ HandleFlash (
                           mDataBuffer
                           );
   }
-  if (Status == EFI_NOT_FOUND) {
-    SEND_LITERAL ("FAILNo such partition.");
-    mTextOut->OutputString (mTextOut, L"No such partition.\r\n");
-  } else if (EFI_ERROR (Status)) {
-    SEND_LITERAL ("FAILError flashing partition.");
-    mTextOut->OutputString (mTextOut, L"Error flashing partition.\r\n");
-    DEBUG ((EFI_D_ERROR, "Couldn't flash image:  %r\n", Status));
-  } else {
+  switch (Status) {
+  case EFI_SUCCESS:
     mTextOut->OutputString (mTextOut, L"Done.\r\n");
     SEND_LITERAL ("OKAY");
+    break;
+  case EFI_NOT_FOUND:
+    SEND_LITERAL ("FAILNo such partition.");
+    mTextOut->OutputString (mTextOut, L"No such partition.\r\n");
+    break;
+  default:
+    SEND_LITERAL ("FAILError flashing partition.");
+    mTextOut->OutputString (mTextOut, L"Error flashing partition.\r\n");
+    DEBUG ((EFI_D_ERROR, "Couldn't flash image:\n"));
+    break;
   }
 }
 
