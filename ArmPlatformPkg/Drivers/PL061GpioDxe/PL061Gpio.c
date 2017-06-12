@@ -186,7 +186,7 @@ Get (
     return EFI_INVALID_PARAMETER;
   }
 
-  if (PL061GetPins (RegisterBase + PL061_GPIO_DATA_REG, Offset)) {
+  if (PL061GetPins (RegisterBase + PL061_GPIO_DATA_REG, GPIO_PIN_MASK (Offset))) {
     *Value = 1;
   } else {
     *Value = 0;
