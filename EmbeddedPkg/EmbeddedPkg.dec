@@ -164,6 +164,7 @@
   gEmbeddedTokenSpaceGuid.PcdAndroidFastbootTcpPort|1234|UINT32|0x00000024
 
   gEmbeddedTokenSpaceGuid.PcdAndroidBootDevicePath|L""|VOID*|0x00000057
+  gEmbeddedTokenSpaceGuid.PcdSdBootDevicePath|L""|VOID*|0x00000058
 
 
 [PcdsFixedAtBuild.ARM]
