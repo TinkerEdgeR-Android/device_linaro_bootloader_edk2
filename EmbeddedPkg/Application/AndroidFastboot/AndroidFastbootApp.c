@@ -366,6 +366,7 @@ AcceptCmd (
   IN  CONST CHAR8 *Data
   )
 {
+  EFI_STATUS  Status;
   CHAR8       Command[FASTBOOT_COMMAND_MAX_LENGTH + 1];
 
   // Max command size is 64 bytes
@@ -396,13 +397,11 @@ AcceptCmd (
 
     gBS->SignalEvent (mFinishedEvent);
   } else if (MATCH_CMD_LITERAL ("reboot", Command)) {
-    if (MATCH_CMD_LITERAL ("reboot-booloader", Command)) {
-      // fastboot_protocol.txt:
-      //    "reboot-bootloader    Reboot back into the bootloader."
-      // I guess this means reboot back into fastboot mode to save the user
-      // having to do whatever they did to get here again.
-      // Here we just reboot normally.
-      SEND_LITERAL ("INFOreboot-bootloader not supported, rebooting normally.");
+    if (MATCH_CMD_LITERAL ("reboot-bootloader", Command)) {
+      Status = mPlatform->DoOemCommand ("reboot-bootloader");
+      if (EFI_ERROR (Status)) {
+        SEND_LITERAL ("INFOreboot-bootloader not supported, rebooting normally.");
+      }
     }
     SEND_LITERAL ("OKAY");
     gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
