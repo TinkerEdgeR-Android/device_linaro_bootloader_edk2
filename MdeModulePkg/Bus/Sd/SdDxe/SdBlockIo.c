@@ -426,6 +426,36 @@ Error:
   return Status;
 }
 
+EFI_STATUS
+SdStopTrans (
+  IN  SD_DEVICE                 *Device
+  )
+{
+  EFI_STATUS                           Status;
+  EFI_SD_MMC_PASS_THRU_PROTOCOL        *PassThru;
+  EFI_SD_MMC_COMMAND_BLOCK             SdMmcCmdBlk;
+  EFI_SD_MMC_STATUS_BLOCK              SdMmcStatusBlk;
+  EFI_SD_MMC_PASS_THRU_COMMAND_PACKET  Packet;
+
+  PassThru = Device->Private->PassThru;
+
+  ZeroMem (&SdMmcCmdBlk, sizeof (SdMmcCmdBlk));
+  ZeroMem (&SdMmcStatusBlk, sizeof (SdMmcStatusBlk));
+  ZeroMem (&Packet, sizeof (Packet));
+
+  Packet.SdMmcCmdBlk    = &SdMmcCmdBlk;
+  Packet.SdMmcStatusBlk = &SdMmcStatusBlk;
+  Packet.Timeout        = SD_GENERIC_TIMEOUT;
+
+  SdMmcCmdBlk.CommandIndex = SD_STOP_TRANSMISSION;
+  SdMmcCmdBlk.CommandType  = SdMmcCommandTypeAc;
+  SdMmcCmdBlk.ResponseType = SdMmcResponseTypeR1b;
+  SdMmcCmdBlk.CommandArgument = 0;
+
+  Status = PassThru->PassThru (PassThru, Device->Slot, &Packet, NULL);
+  return Status;
+}
+
 /**
   Read/write multiple blocks through sync or async I/O request.
 
@@ -555,6 +585,11 @@ Error:
     }
   }
 
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = SdStopTrans (Device);
   return Status;
 }
 
