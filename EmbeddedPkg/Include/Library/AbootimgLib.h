@@ -62,4 +62,12 @@ AbootimgBoot (
   IN UINTN                   BufferSize
   );
 
+EFI_STATUS
+AbootimgBootKernel (
+  IN VOID                            *Buffer,
+  IN UINTN                            BufferSize,
+  IN VOID                            *ImgBuffer,
+  IN UINTN                            ImgBufferSize
+  );
+
 #endif /* __ABOOTIMG_H__ */
