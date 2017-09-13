@@ -14,11 +14,14 @@
 
 #include <Protocol/AndroidFastbootTransport.h>
 #include <Protocol/AndroidFastbootPlatform.h>
+#include <Protocol/BlockIo.h>
+#include <Protocol/DevicePathFromText.h>
 #include <Protocol/SimpleTextOut.h>
 #include <Protocol/SimpleTextIn.h>
 
 #include <Library/AbootimgLib.h>
 #include <Library/BaseMemoryLib.h>
+#include <Library/DevicePathLib.h>
 #include <Library/PcdLib.h>
 #include <Library/PrintLib.h>
 #include <Library/UefiApplicationEntryPoint.h>
@@ -34,6 +37,10 @@
 #define CHUNK_TYPE_CRC32            0xCAC4
 
 #define FILL_BUF_SIZE               1024
+
+#define IS_DEVICE_PATH_NODE(node,type,subtype) (((node)->Type == (type)) && ((node)->SubType == (subtype)))
+
+#define ALIGN(x, a)        (((x) + ((a) - 1)) & ~((a) - 1))
 
 typedef struct _SPARSE_HEADER {
   UINT32       Magic;
@@ -313,6 +320,109 @@ HandleErase (
 }
 
 STATIC
+EFI_STATUS
+BootImageWithKernel (
+  IN VOID                             *Kernel,
+  IN UINTN                            KernelSize
+  )
+{
+  EFI_STATUS                          Status;
+  CHAR16                              *BootPathStr;
+  EFI_DEVICE_PATH_FROM_TEXT_PROTOCOL  *EfiDevicePathFromTextProtocol;
+  EFI_DEVICE_PATH                     *DevicePath;
+  EFI_DEVICE_PATH_PROTOCOL            *Node, *NextNode;
+  EFI_BLOCK_IO_PROTOCOL               *BlockIo;
+  UINT32                              MediaId, BlockSize;
+  VOID                                *Buffer;
+  EFI_HANDLE                          Handle;
+  UINTN                               Size;
+
+  BootPathStr = (CHAR16 *)PcdGetPtr (PcdAndroidBootDevicePath);
+  ASSERT (BootPathStr != NULL);
+  Status = gBS->LocateProtocol (&gEfiDevicePathFromTextProtocolGuid, NULL, (VOID **)&EfiDevicePathFromTextProtocol);
+  ASSERT_EFI_ERROR(Status);
+  DevicePath = (EFI_DEVICE_PATH *)EfiDevicePathFromTextProtocol->ConvertTextToDevicePath (BootPathStr);
+  ASSERT (DevicePath != NULL);
+
+  /* Find DevicePath node of Partition */
+  NextNode = DevicePath;
+  while (1) {
+    Node = NextNode;
+    if (IS_DEVICE_PATH_NODE (Node, MEDIA_DEVICE_PATH, MEDIA_HARDDRIVE_DP)) {
+      break;
+    }
+    NextNode = NextDevicePathNode (Node);
+  }
+
+  Status = gBS->LocateDevicePath (&gEfiDevicePathProtocolGuid, &DevicePath, &Handle);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = gBS->OpenProtocol (
+                  Handle,
+                  &gEfiBlockIoProtocolGuid,
+                  (VOID **) &BlockIo,
+                  gImageHandle,
+                  NULL,
+                  EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                  );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "Failed to get BlockIo: %r\n", Status));
+    return Status;
+  }
+
+  MediaId = BlockIo->Media->MediaId;
+  BlockSize = BlockIo->Media->BlockSize;
+  Buffer = AllocatePages (1);
+  if (Buffer == NULL) {
+    return EFI_BUFFER_TOO_SMALL;
+  }
+  /* Load header of boot.img */
+  Status = BlockIo->ReadBlocks (
+                      BlockIo,
+                      MediaId,
+                      0,
+                      BlockSize,
+                      Buffer
+                      );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  Status = AbootimgGetImgSize (Buffer, &Size);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "Failed to get Abootimg Size: %r\n", Status));
+    return Status;
+  }
+  Size = ALIGN (Size, BlockSize);
+  FreePages (Buffer, 1);
+
+  /* Both PartitionStart and PartitionSize are counted as block size. */
+  Buffer = AllocatePages (EFI_SIZE_TO_PAGES (Size));
+  if (Buffer == NULL) {
+    return EFI_BUFFER_TOO_SMALL;
+  }
+
+  /* Load header of boot.img */
+  Status = BlockIo->ReadBlocks (
+                      BlockIo,
+                      MediaId,
+                      0,
+                      Size,
+                      Buffer
+                      );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "Failed to read blocks: %r\n", Status));
+    goto EXIT;
+  }
+
+  Status = AbootimgBootKernel (Kernel, KernelSize, Buffer, Size);
+
+EXIT:
+  return Status;
+}
+
+STATIC
 VOID
 HandleBoot (
   VOID
@@ -335,6 +445,12 @@ HandleBoot (
   Status = AbootimgBoot (mDataBuffer, mNumDataBytes);
   if (EFI_ERROR (Status)) {
     DEBUG ((EFI_D_ERROR, "Failed to boot downloaded image: %r\n", Status));
+
+    // Try to boot kernel with original boot image
+    Status = BootImageWithKernel (mDataBuffer, mNumDataBytes);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((EFI_D_ERROR, "Failed to boot downloaded kernel: %r\n", Status));
+    }
   }
   // We shouldn't get here
 }

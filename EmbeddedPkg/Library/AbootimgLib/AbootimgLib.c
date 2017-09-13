@@ -238,7 +238,13 @@ AbootimgBoot (
   EFI_PHYSICAL_ADDRESS                FdtBase;
   VOID                               *NewKernelArg;
   EFI_LOADED_IMAGE_PROTOCOL          *ImageInfo;
+  ANDROID_BOOTIMG_HEADER             *Header;
 
+  Header = Buffer;
+  if (Header->KernelArgs[0] == '\0') {
+    // It's not valid boot image since it's lack of kernel args.
+    return EFI_INVALID_PARAMETER;
+  }
   Status = AbootimgGetKernelInfo (
             Buffer,
             &Kernel,
@@ -268,7 +274,7 @@ AbootimgBoot (
     return EFI_INVALID_PARAMETER;
   }
 
-  KernelDevicePath = MemoryDevicePathTemplate;
+  CopyMem (&KernelDevicePath, &MemoryDevicePathTemplate, sizeof (MemoryDevicePathTemplate));
 
   // Have to cast to UINTN before casting to EFI_PHYSICAL_ADDRESS in order to
   // appease GCC.
@@ -276,6 +282,85 @@ AbootimgBoot (
   KernelDevicePath.Node1.EndingAddress   = (EFI_PHYSICAL_ADDRESS)(UINTN) Kernel + KernelSize;
 
   Status = gBS->LoadImage (TRUE, gImageHandle, (EFI_DEVICE_PATH *)&KernelDevicePath, (VOID*)(UINTN)Kernel, KernelSize, &ImageHandle);
+
+  // Set kernel arguments
+  Status = gBS->HandleProtocol (ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID **) &ImageInfo);
+  ImageInfo->LoadOptions = NewKernelArg;
+  ImageInfo->LoadOptionsSize = StrLen (NewKernelArg) * sizeof (CHAR16);
+
+  // Before calling the image, enable the Watchdog Timer for  the 5 Minute period
+  gBS->SetWatchdogTimer (5 * 60, 0x0000, 0x00, NULL);
+  // Start the image
+  Status = gBS->StartImage (ImageHandle, NULL, NULL);
+  // Clear the Watchdog Timer after the image returns
+  gBS->SetWatchdogTimer (0x0000, 0x0000, 0x0000, NULL);
+  return EFI_SUCCESS;
+}
+
+EFI_STATUS
+AbootimgBootKernel (
+  IN VOID                            *Buffer,
+  IN UINTN                            BufferSize,
+  IN VOID                            *ImgBuffer,
+  IN UINTN                            ImgBufferSize
+  )
+{
+  EFI_STATUS                          Status;
+  VOID                               *ImgKernel;
+  UINTN                               ImgKernelSize;
+  VOID                               *DwnldKernel;
+  UINTN                               DwnldKernelSize;
+  EFI_HANDLE                          ImageHandle;
+  EFI_PHYSICAL_ADDRESS                ImgFdtBase;
+  VOID                               *NewKernelArg;
+  EFI_LOADED_IMAGE_PROTOCOL          *ImageInfo;
+  MEMORY_DEVICE_PATH                  KernelDevicePath;
+
+  Status = AbootimgGetKernelInfo (
+            Buffer,
+            &DwnldKernel,
+            &DwnldKernelSize
+            );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = AbootimgGetKernelInfo (
+            ImgBuffer,
+            &ImgKernel,
+            &ImgKernelSize
+            );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  /* For flatten image, Fdt is attached at the end of kernel.
+     Get real kernel size.
+   */
+  ImgKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_STEXT_OFFSET) +
+                  *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
+  NewKernelArg = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE);
+  if (NewKernelArg == NULL) {
+    DEBUG ((DEBUG_ERROR, "Fail to allocate memory\n"));
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  /* FDT is at the end of kernel image */
+  ImgFdtBase = (EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + ImgKernelSize;
+  Status = AbootimgInstallFdt (ImgBuffer, ImgFdtBase, NewKernelArg);
+  if (EFI_ERROR (Status)) {
+    FreePool (NewKernelArg);
+    return EFI_INVALID_PARAMETER;
+  }
+
+  CopyMem (&KernelDevicePath, &MemoryDevicePathTemplate, sizeof (MemoryDevicePathTemplate));
+
+  // Have to cast to UINTN before casting to EFI_PHYSICAL_ADDRESS in order to
+  // appease GCC.
+  KernelDevicePath.Node1.StartingAddress = (EFI_PHYSICAL_ADDRESS)(UINTN) DwnldKernel;
+  KernelDevicePath.Node1.EndingAddress   = (EFI_PHYSICAL_ADDRESS)(UINTN) DwnldKernel + DwnldKernelSize;
+
+  Status = gBS->LoadImage (TRUE, gImageHandle, (EFI_DEVICE_PATH *)&KernelDevicePath, (VOID*)(UINTN)DwnldKernel, DwnldKernelSize, &ImageHandle);
 
   // Set kernel arguments
   Status = gBS->HandleProtocol (ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID **) &ImageInfo);

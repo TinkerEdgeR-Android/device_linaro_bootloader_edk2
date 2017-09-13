@@ -43,6 +43,7 @@
 [Protocols]
   gAndroidFastbootTransportProtocolGuid
   gAndroidFastbootPlatformProtocolGuid
+  gEfiBlockIoProtocolGuid
   gEfiSimpleTextOutProtocolGuid
   gEfiSimpleTextInProtocolGuid
 
@@ -57,3 +58,6 @@
 
 [Guids]
   gFdtTableGuid
+
+[Pcd]
+  gEmbeddedTokenSpaceGuid.PcdAndroidBootDevicePath
