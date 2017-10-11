@@ -189,7 +189,7 @@ AbootimgInstallFdt (
     return Status;
   }
   // Get kernel arguments from Android boot image
-  AsciiStrToUnicodeStrS (ImgKernelArgs, KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE >> 1);
+  AsciiStrToUnicodeStrS (ImgKernelArgs, KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
   // Set the ramdisk in command line arguments
   UnicodeSPrint (
     (CHAR16 *)KernelArgs + StrLen (KernelArgs), BOOTIMG_KERNEL_ARGS_SIZE,
@@ -260,7 +260,7 @@ AbootimgBoot (
   KernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KERNEL_IMAGE_STEXT_OFFSET) +
                *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
 
-  NewKernelArg = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE);
+  NewKernelArg = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE << 1);
   if (NewKernelArg == NULL) {
     DEBUG ((DEBUG_ERROR, "Fail to allocate memory\n"));
     return EFI_OUT_OF_RESOURCES;
@@ -339,7 +339,7 @@ AbootimgBootKernel (
    */
   ImgKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_STEXT_OFFSET) +
                   *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
-  NewKernelArg = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE);
+  NewKernelArg = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE << 1);
   if (NewKernelArg == NULL) {
     DEBUG ((DEBUG_ERROR, "Fail to allocate memory\n"));
     return EFI_OUT_OF_RESOURCES;
