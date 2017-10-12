@@ -1420,7 +1420,7 @@ STATIC LoadAndroidBootImg (
   if (StrnCmp (KernelArgs, BdsLoadOption->OptionalData,
                BOOTIMG_KERNEL_ARGS_SIZE) != 0) {
     ASSERT (BdsLoadOption->OptionalData != NULL);
-    ASSERT (StrSize (KernelArgs) <= BOOTIMG_KERNEL_ARGS_SIZE);
+    ASSERT (StrSize (KernelArgs) <= BOOTIMG_KERNEL_ARGS_SIZE * sizeof (CHAR16));
 
     UnicodeSPrint (InitrdArgs, 64 * sizeof(CHAR16), L" initrd=0x%x,0x%x",
 		   Header->RamdiskAddress, Header->RamdiskSize);
@@ -1440,7 +1440,7 @@ STATIC LoadAndroidBootImg (
     ZeroMem (SerialNoArgs, 40 * sizeof (CHAR16));
     UnicodeSPrint (SerialNoArgs, 40 * sizeof(CHAR16), L" androidboot.serialno=%s", DataUnicode);
     StrCat (KernelArgs, SerialNoArgs);
-    ASSERT (StrSize (KernelArgs) <= BOOTIMG_KERNEL_ARGS_SIZE);
+    ASSERT (StrSize (KernelArgs) <= BOOTIMG_KERNEL_ARGS_SIZE * sizeof (CHAR16));
     if (gArgs != NULL) {
       CopyMem ((VOID *)gArgs,
                (VOID *)KernelArgs,
