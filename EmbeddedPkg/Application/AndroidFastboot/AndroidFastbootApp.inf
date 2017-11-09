@@ -22,18 +22,16 @@
 
 [Sources.common]
   AndroidFastbootApp.c
-  AndroidBootImg.c
-
-[Sources.ARM, Sources.AARCH64]
-  Arm/BootAndroidBootImg.c
 
 [LibraryClasses]
+  AbootimgLib
   BaseLib
   BaseMemoryLib
   BdsLib
   DebugLib
   DevicePathLib
   DxeServicesTableLib
+  FdtLib
   MemoryAllocationLib
   PcdLib
   PrintLib
@@ -45,6 +43,7 @@
 [Protocols]
   gAndroidFastbootTransportProtocolGuid
   gAndroidFastbootPlatformProtocolGuid
+  gEfiBlockIoProtocolGuid
   gEfiSimpleTextOutProtocolGuid
   gEfiSimpleTextInProtocolGuid
 
@@ -56,3 +55,9 @@
 [Packages.ARM, Packages.AARCH64]
   ArmPkg/ArmPkg.dec
   ArmPlatformPkg/ArmPlatformPkg.dec
+
+[Guids]
+  gFdtTableGuid
+
+[Pcd]
+  gEmbeddedTokenSpaceGuid.PcdAndroidBootDevicePath
