@@ -163,6 +163,9 @@ HandleDownload (
     SEND_LITERAL ("FAILNot enough memory");
   } else {
     ZeroMem (Response, sizeof Response);
+    if (mTransport->RequestReceive) {
+      mTransport->RequestReceive (mNumDataBytes);
+    }
     AsciiSPrint (Response, sizeof Response, "DATA%x",
       (UINT32)mNumDataBytes);
     mTransport->Send (sizeof Response - 1, Response, &mFatalSendErrorEvent);
@@ -608,6 +611,12 @@ DataReady (
   EFI_STATUS  Status;
 
   do {
+    // Indicate lower layer driver that how much bytes are expected.
+    if (mState == ExpectDataState) {
+      Size = mNumDataBytes;
+    } else {
+      Size = 0;
+    }
     Status = mTransport->Receive (&Size, &Data);
     if (!EFI_ERROR (Status)) {
       if (mState == ExpectCmdState) {
