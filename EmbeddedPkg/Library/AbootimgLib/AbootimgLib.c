@@ -311,10 +311,11 @@ AbootimgBootKernel (
   VOID                               *DwnldKernel;
   UINTN                               DwnldKernelSize;
   EFI_HANDLE                          ImageHandle;
-  EFI_PHYSICAL_ADDRESS                ImgFdtBase;
+  EFI_PHYSICAL_ADDRESS                FdtBase;
   VOID                               *NewKernelArg;
   EFI_LOADED_IMAGE_PROTOCOL          *ImageInfo;
   MEMORY_DEVICE_PATH                  KernelDevicePath;
+  INTN                                err;
 
   Status = AbootimgGetKernelInfo (
             Buffer,
@@ -334,20 +335,33 @@ AbootimgBootKernel (
     return Status;
   }
 
-  /* For flatten image, Fdt is attached at the end of kernel.
-     Get real kernel size.
+  /*
+   * FDT location:
+   *   1. at the end of flattern image.
+   *   2. in the boot image of storage device.
    */
-  ImgKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_STEXT_OFFSET) +
-                  *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
+  DwnldKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)DwnldKernel + KERNEL_IMAGE_STEXT_OFFSET) +
+                    *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)DwnldKernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
+  FdtBase = (EFI_PHYSICAL_ADDRESS)(UINTN)DwnldKernel + DwnldKernelSize;
+  err = fdt_check_header ((VOID*)(UINTN)FdtBase);
+  if (err != 0) {
+    // Can not find the device tree header at the end of downloaded kernel
+    // Check FDT at the end of kernel image of boot image instead.
+    ImgKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_STEXT_OFFSET) +
+                    *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
+    FdtBase = (EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + ImgKernelSize;
+    err = fdt_check_header ((VOID*)(UINTN)FdtBase);
+  }
+  if (err != 0) {
+    Print (L"ERROR: Device Tree header not valid (err:%d)\n", err);
+    return EFI_INVALID_PARAMETER;
+  }
   NewKernelArg = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE << 1);
   if (NewKernelArg == NULL) {
     DEBUG ((DEBUG_ERROR, "Fail to allocate memory\n"));
     return EFI_OUT_OF_RESOURCES;
   }
-
-  /* FDT is at the end of kernel image */
-  ImgFdtBase = (EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + ImgKernelSize;
-  Status = AbootimgInstallFdt (ImgBuffer, ImgFdtBase, NewKernelArg);
+  Status = AbootimgInstallFdt (ImgBuffer, FdtBase, NewKernelArg);
   if (EFI_ERROR (Status)) {
     FreePool (NewKernelArg);
     return EFI_INVALID_PARAMETER;
