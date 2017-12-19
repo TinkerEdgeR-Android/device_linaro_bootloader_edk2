@@ -26,6 +26,11 @@
 // Check Val (unsigned) is a power of 2 (has only one bit set)
 #define IS_POWER_OF_2(Val)                (Val != 0 && ((Val & (Val - 1)) == 0))
 
+// Offset in Kernel Image
+#define KERNEL_SIZE_OFFSET                0x10
+#define KERNEL_MAGIC_OFFSET               0x38
+#define KERNEL_MAGIC                      "ARMd"
+
 typedef struct {
   MEMMAP_DEVICE_PATH                      Node1;
   EFI_DEVICE_PATH_PROTOCOL                End;
@@ -53,6 +58,22 @@ STATIC CONST MEMORY_DEVICE_PATH MemoryDevicePathTemplate =
     { sizeof (EFI_DEVICE_PATH_PROTOCOL), 0 }
   } // End
 };
+
+STATIC
+EFI_STATUS
+CheckKernelImageHeader (
+  IN  VOID                  *Kernel
+  )
+{
+  if (Kernel == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+  /* Check magic number of uncompressed Kernel Image */
+  if (AsciiStrnCmp ((VOID *)((UINTN)Kernel + KERNEL_MAGIC_OFFSET), KERNEL_MAGIC, 4) == 0) {
+    return EFI_SUCCESS;
+  }
+  return EFI_INVALID_PARAMETER;
+}
 
 EFI_STATUS
 AbootimgGetImgSize (
@@ -150,8 +171,37 @@ AbootimgGetKernelArgs (
   return EFI_SUCCESS;
 }
 
+STATIC
 EFI_STATUS
-AbootimgInstallFdt (
+GetAttachedFdt (
+  IN VOID                            *Kernel,
+  OUT VOID                           **Fdt
+  )
+{
+  UINTN                      RawKernelSize;
+  INTN                       err;
+
+  // Get real kernel size.
+  RawKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KERNEL_IMAGE_STEXT_OFFSET) +
+                  *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
+
+  /* FDT is at the end of kernel image */
+  *Fdt = (VOID *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + RawKernelSize);
+
+  //
+  // Sanity checks on the FDT blob.
+  //
+  err = fdt_check_header ((VOID*)(UINTN)*Fdt);
+  if (err != 0) {
+    Print (L"ERROR: Device Tree header not valid (err:%d)\n", err);
+    return EFI_INVALID_PARAMETER;
+  }
+  return EFI_SUCCESS;
+}
+
+STATIC
+EFI_STATUS
+InstallFdt (
   IN  VOID                  *BootImg,
   IN  EFI_PHYSICAL_ADDRESS   FdtBase,
   OUT VOID                  *KernelArgs
@@ -165,10 +215,6 @@ AbootimgInstallFdt (
   EFI_PHYSICAL_ADDRESS       NewFdtBase;
 
   Status = gBS->LocateProtocol (&gAbootimgProtocolGuid, NULL, (VOID **) &mAbootimg);
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
-
   if (EFI_ERROR (Status)) {
     return Status;
   }
@@ -188,19 +234,22 @@ AbootimgInstallFdt (
   if (EFI_ERROR (Status)) {
     return Status;
   }
-  // Get kernel arguments from Android boot image
-  AsciiStrToUnicodeStrS (ImgKernelArgs, KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
-  // Set the ramdisk in command line arguments
-  UnicodeSPrint (
-    (CHAR16 *)KernelArgs + StrLen (KernelArgs), BOOTIMG_KERNEL_ARGS_SIZE,
-    L" initrd=0x%x,0x%x",
-    (UINTN)Ramdisk, (UINTN)RamdiskSize
-    );
 
-  // Append platform kernel arguments
-  Status = mAbootimg->AppendArgs (KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
-  if (EFI_ERROR (Status)) {
-    return Status;
+  if (ImgKernelArgs != NULL) {
+    // Get kernel arguments from Android boot image
+    AsciiStrToUnicodeStrS (ImgKernelArgs, KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
+    // Set the ramdisk in command line arguments
+    UnicodeSPrint (
+      (CHAR16 *)KernelArgs + StrLen (KernelArgs), BOOTIMG_KERNEL_ARGS_SIZE,
+      L" initrd=0x%x,0x%x",
+      (UINTN)Ramdisk, (UINTN)RamdiskSize
+      );
+
+    // Append platform kernel arguments
+    Status = mAbootimg->AppendArgs (KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
+    if (EFI_ERROR (Status)) {
+      return Status;
+    }
   }
 
   Status = mAbootimg->UpdateDtb (FdtBase, &NewFdtBase);
@@ -235,16 +284,10 @@ AbootimgBoot (
   UINTN                               KernelSize;
   MEMORY_DEVICE_PATH                  KernelDevicePath;
   EFI_HANDLE                          ImageHandle;
-  EFI_PHYSICAL_ADDRESS                FdtBase;
   VOID                               *NewKernelArg;
   EFI_LOADED_IMAGE_PROTOCOL          *ImageInfo;
-  ANDROID_BOOTIMG_HEADER             *Header;
+  VOID                               *Fdt;
 
-  Header = Buffer;
-  if (Header->KernelArgs[0] == '\0') {
-    // It's not valid boot image since it's lack of kernel args.
-    return EFI_INVALID_PARAMETER;
-  }
   Status = AbootimgGetKernelInfo (
             Buffer,
             &Kernel,
@@ -253,12 +296,10 @@ AbootimgBoot (
   if (EFI_ERROR (Status)) {
     return Status;
   }
-
-  /* For flatten image, Fdt is attached at the end of kernel.
-     Get real kernel size.
-   */
-  KernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KERNEL_IMAGE_STEXT_OFFSET) +
-               *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
+  Status = CheckKernelImageHeader (Kernel);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
 
   NewKernelArg = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE << 1);
   if (NewKernelArg == NULL) {
@@ -266,9 +307,11 @@ AbootimgBoot (
     return EFI_OUT_OF_RESOURCES;
   }
 
-  /* FDT is at the end of kernel image */
-  FdtBase = (EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KernelSize;
-  Status = AbootimgInstallFdt (Buffer, FdtBase, NewKernelArg);
+  Status = GetAttachedFdt (Kernel, &Fdt);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  Status = InstallFdt (Buffer, (UINTN)Fdt, NewKernelArg);
   if (EFI_ERROR (Status)) {
     FreePool (NewKernelArg);
     return EFI_INVALID_PARAMETER;
@@ -311,17 +354,20 @@ AbootimgBootKernel (
   VOID                               *DwnldKernel;
   UINTN                               DwnldKernelSize;
   EFI_HANDLE                          ImageHandle;
-  EFI_PHYSICAL_ADDRESS                FdtBase;
   VOID                               *NewKernelArg;
   EFI_LOADED_IMAGE_PROTOCOL          *ImageInfo;
   MEMORY_DEVICE_PATH                  KernelDevicePath;
-  INTN                                err;
+  VOID                               *Fdt;
 
   Status = AbootimgGetKernelInfo (
             Buffer,
             &DwnldKernel,
             &DwnldKernelSize
             );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  Status = CheckKernelImageHeader (DwnldKernel);
   if (EFI_ERROR (Status)) {
     return Status;
   }
@@ -334,34 +380,29 @@ AbootimgBootKernel (
   if (EFI_ERROR (Status)) {
     return Status;
   }
+  Status = CheckKernelImageHeader (ImgKernel);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
 
   /*
    * FDT location:
    *   1. at the end of flattern image.
    *   2. in the boot image of storage device.
    */
-  DwnldKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)DwnldKernel + KERNEL_IMAGE_STEXT_OFFSET) +
-                    *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)DwnldKernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
-  FdtBase = (EFI_PHYSICAL_ADDRESS)(UINTN)DwnldKernel + DwnldKernelSize;
-  err = fdt_check_header ((VOID*)(UINTN)FdtBase);
-  if (err != 0) {
-    // Can not find the device tree header at the end of downloaded kernel
-    // Check FDT at the end of kernel image of boot image instead.
-    ImgKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_STEXT_OFFSET) +
-                    *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
-    FdtBase = (EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + ImgKernelSize;
-    err = fdt_check_header ((VOID*)(UINTN)FdtBase);
-  }
-  if (err != 0) {
-    Print (L"ERROR: Device Tree header not valid (err:%d)\n", err);
-    return EFI_INVALID_PARAMETER;
+  Status = GetAttachedFdt (DwnldKernel, &Fdt);
+  if (EFI_ERROR (Status)) {
+    Status = GetAttachedFdt (ImgKernel, &Fdt);
+    if (EFI_ERROR (Status)) {
+      return Status;
+    }
   }
   NewKernelArg = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE << 1);
   if (NewKernelArg == NULL) {
     DEBUG ((DEBUG_ERROR, "Fail to allocate memory\n"));
     return EFI_OUT_OF_RESOURCES;
   }
-  Status = AbootimgInstallFdt (ImgBuffer, FdtBase, NewKernelArg);
+  Status = InstallFdt (ImgBuffer, (UINTN)Fdt, NewKernelArg);
   if (EFI_ERROR (Status)) {
     FreePool (NewKernelArg);
     return EFI_INVALID_PARAMETER;
