@@ -18,6 +18,7 @@
 #include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
+#include <Library/ZLib.h>
 
 #include <Protocol/Abootimg.h>
 #include <Protocol/BlockIo.h>
@@ -35,6 +36,9 @@
 #define KERNEL_MAGIC                      "ARMd"
 
 #define BOOTIMG_HEADER_BLOCKS             1
+#define FDTIMG_HEADER_BLOCKS              1
+
+#define DEFAULT_UNCOMPRESS_BUFFER_SIZE    (32 * 1024 * 1024)
 
 #define IS_DEVICE_PATH_NODE(node,type,subtype) (((node)->Type == (type)) && ((node)->SubType == (subtype)))
 
@@ -80,6 +84,29 @@ CheckKernelImageHeader (
     return EFI_SUCCESS;
   }
   return EFI_INVALID_PARAMETER;
+}
+
+STATIC
+EFI_STATUS
+UncompressKernel (
+  IN  VOID                 *Source,
+  IN  UINTN                *SourceSize,
+  OUT VOID                **Kernel,
+  OUT UINTN                *KernelSize
+  )
+{
+  INTN            err;
+
+  *Kernel = AllocatePages (EFI_SIZE_TO_PAGES (DEFAULT_UNCOMPRESS_BUFFER_SIZE));
+  if (*Kernel == NULL) {
+    return EFI_BUFFER_TOO_SMALL;
+  }
+  *KernelSize = DEFAULT_UNCOMPRESS_BUFFER_SIZE;
+  err = GzipDecompress (Source, SourceSize, *Kernel, KernelSize);
+  if (err) {
+    return EFI_INVALID_PARAMETER;
+  }
+  return EFI_SUCCESS;
 }
 
 STATIC
@@ -157,9 +184,8 @@ GetRamdiskInfo (
   *RamdiskSize = Header->RamdiskSize;
 
   if (Header->RamdiskSize != 0) {
-    *Ramdisk = (VOID *) (BootImgBytePtr
-                 + Header->PageSize
-                 + ALIGN_VALUE (Header->KernelSize, Header->PageSize));
+    *Ramdisk = (VOID *) (BootImgBytePtr + Header->PageSize +
+                 ALIGN_VALUE (Header->KernelSize, Header->PageSize));
   }
   return EFI_SUCCESS;
 }
@@ -188,6 +214,11 @@ GetAttachedFdt (
 {
   UINTN                      RawKernelSize;
   INTN                       err;
+
+  err = fdt_check_header ((VOID*)(UINTN)*Fdt);
+  if (err == 0) {
+    return EFI_SUCCESS;
+  }
 
   // Get real kernel size.
   RawKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KERNEL_IMAGE_STEXT_OFFSET) +
@@ -419,10 +450,12 @@ BootFromRam (
 {
   EFI_STATUS                 Status;
   VOID                       *BootImage = NULL;
+  VOID                       *CompressedKernel;
   VOID                       *Fdt;
   VOID                       *Ramdisk;
   VOID                       *StoredKernel;
   UINTN                      BootImageSize;
+  UINTN                      CompressedKernelSize;
   UINTN                      RamdiskSize;
   UINTN                      StoredKernelSize;
 
@@ -433,35 +466,92 @@ BootFromRam (
   }
   Status = CheckKernelImageHeader (*Kernel);
   if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_ERROR, "Wrong kernel image: %r\n", Status));
+    DEBUG ((DEBUG_ERROR, "The kernel is not raw format.\n"));
+    CompressedKernel = *Kernel;
+    CompressedKernelSize = *KernelSize;
+    Status = UncompressKernel (
+               CompressedKernel,
+               &CompressedKernelSize,
+               Kernel,
+               KernelSize
+               );
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "Failed to uncompress kernel with gzip format: %r\n", Status));
       return Status;
-  }
-  // Get FDT from the end of raw kernel that is located in RAM
-  Status = GetAttachedFdt (*Kernel, &Fdt);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "Failed to get attached FDT from the end of raw kernel: %r\n", Status));
-    if (BootImage == NULL) {
-      Status = LoadBootImage (BootPathStr, &BootImage, &BootImageSize);
+    }
+    // gzip kernel with attached FDT
+    Fdt = CompressedKernel + CompressedKernelSize;
+    Status = GetAttachedFdt (*Kernel, &Fdt);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "Failed to load FDT from gzip kernel\n"));
+      if (BootImage == NULL) {
+        Status = LoadBootImage (BootPathStr, &BootImage, &BootImageSize);
+        if (EFI_ERROR (Status)) {
+          DEBUG ((DEBUG_ERROR, "Failed to load boot image from partition: %r\n", Status));
+          return Status;
+        }
+      }
+      // Get FDT from the end of kernel that is located in partition
+      Status = AbootimgGetKernelInfo (BootImage, &StoredKernel, &StoredKernelSize);
       if (EFI_ERROR (Status)) {
-        DEBUG ((DEBUG_ERROR, "Failed to load boot image from partition: %r\n", Status));
+        DEBUG ((DEBUG_ERROR, "Failed to get kernel information from stored Android Boot Image: %r\n", Status));
+        return Status;
+      }
+      // Get FDT from the end of kernel that is located in partition if it's raw kernel
+      Status = CheckKernelImageHeader (StoredKernel);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "Stored kernel image is not raw format: %r\n", Status));
+        CompressedKernel = StoredKernel;
+        CompressedKernelSize = StoredKernelSize;
+        Status = UncompressKernel (
+                   CompressedKernel,
+                   &CompressedKernelSize,
+                   &StoredKernel,
+                   &StoredKernelSize
+                   );
+        if (EFI_ERROR (Status)) {
+          DEBUG ((DEBUG_ERROR, "Failed to uncompress stored kernel with gzip format: %r\n", Status));
+          return Status;
+        }
+        // Get FDT from the end of stored gzip kernel that is located in partition
+        Fdt = CompressedKernel + CompressedKernelSize;
+      }
+      Status = GetAttachedFdt (StoredKernel, &Fdt);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "Failed to get attached FDT from the end of stored kernel: %r\n", Status));
         return Status;
       }
     }
-    // Get FDT from the end of raw kernel that is located in partition
-    Status = AbootimgGetKernelInfo (BootImage, &StoredKernel, &StoredKernelSize);
+  } else {
+    // raw kernel with attached FDT
+    // Get FDT from the end of raw kernel that is located in RAM
+    Status = GetAttachedFdt (*Kernel, &Fdt);
     if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_ERROR, "Failed to get kernel information from stored Android Boot Image: %r\n", Status));
-      return Status;
-    }
-    Status = CheckKernelImageHeader (StoredKernel);
-    if (EFI_ERROR (Status)) {
-        DEBUG ((DEBUG_ERROR, "Wrong kernel image: %r\n", Status));
+      DEBUG ((DEBUG_ERROR, "Failed to get attached FDT from the end of raw kernel: %r\n", Status));
+      if (BootImage == NULL) {
+        Status = LoadBootImage (BootPathStr, &BootImage, &BootImageSize);
+        if (EFI_ERROR (Status)) {
+          DEBUG ((DEBUG_ERROR, "Failed to load boot image from partition: %r\n", Status));
+          return Status;
+        }
+      }
+      // Get FDT from the end of raw kernel that is located in partition
+      Status = AbootimgGetKernelInfo (BootImage, &StoredKernel, &StoredKernelSize);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "Failed to get kernel information from stored Android Boot Image: %r\n", Status));
         return Status;
-    }
-    Status = GetAttachedFdt (StoredKernel, &Fdt);
-    if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_ERROR, "Failed to get attached FDT from the end of stored raw kernel: %r\n", Status));
-      return Status;
+      }
+      // Get FDT from the end of raw kernel that is located in partition
+      Status = CheckKernelImageHeader (StoredKernel);
+      if (EFI_ERROR (Status)) {
+          DEBUG ((DEBUG_ERROR, "Wrong kernel image: %r\n", Status));
+          return Status;
+      }
+      Status = GetAttachedFdt (StoredKernel, &Fdt);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "Failed to get attached FDT from the end of stored raw kernel: %r\n", Status));
+        return Status;
+      }
     }
   }
   // Get ramdisk from boot image in RAM
@@ -510,9 +600,11 @@ BootFromPartition (
 {
   EFI_STATUS                 Status;
   VOID                       *BootImage;
+  VOID                       *CompressedKernel;
   VOID                       *Fdt;
   VOID                       *Ramdisk;
   UINTN                      BootImageSize;
+  UINTN                      CompressedKernelSize;
   UINTN                      RamdiskSize;
 
   Status = LoadBootImage (BootPathStr, &BootImage, &BootImageSize);
@@ -527,10 +619,23 @@ BootFromPartition (
   }
   Status = CheckKernelImageHeader (*Kernel);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "Wrong kernel image: %r\n", Status));
+    DEBUG ((DEBUG_ERROR, "The kernel image is not raw format: %r\n", Status));
+    CompressedKernel = *Kernel;
+    CompressedKernelSize = *KernelSize;
+    Status = UncompressKernel (
+               CompressedKernel,
+               &CompressedKernelSize,
+               Kernel,
+               KernelSize
+               );
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "Failed to uncompress kernel with gzip format: %r\n", Status));
       return Status;
+    }
+    // gzip kernel with attached FDT
+    Fdt = CompressedKernel + CompressedKernelSize;
   }
-  // Get FDT from the end of raw kernel in boot image
+  // Get FDT from the end of kernel in boot image
   Status = GetAttachedFdt (*Kernel, &Fdt);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "Failed to get attached FDT from the end of raw kernel: %r\n", Status));
