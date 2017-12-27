@@ -57,17 +57,17 @@ AbootimgGetImgSize (
   );
 
 EFI_STATUS
-AbootimgBoot (
+AbootimgBootRam (
   IN VOID                   *Buffer,
-  IN UINTN                   BufferSize
+  IN UINTN                   BufferSize,
+  IN CHAR16                 *BootPathStr,
+  IN CHAR16                 *FdtPathStr
   );
 
 EFI_STATUS
-AbootimgBootKernel (
-  IN VOID                            *Buffer,
-  IN UINTN                            BufferSize,
-  IN VOID                            *ImgBuffer,
-  IN UINTN                            ImgBufferSize
+AbootimgBootPartition (
+  IN CHAR16                 *BootPathStr,
+  IN CHAR16                 *FdtPathStr
   );
 
 #endif /* __ABOOTIMG_H__ */

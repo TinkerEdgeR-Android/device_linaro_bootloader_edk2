@@ -14,17 +14,33 @@
 **/
 
 #include <Library/AbootimgLib.h>
+#include <Library/DevicePathLib.h>
 #include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
+#include <Library/ZLib.h>
 
 #include <Protocol/Abootimg.h>
+#include <Protocol/BlockIo.h>
+#include <Protocol/DevicePathFromText.h>
 #include <Protocol/LoadedImage.h>
 
 #include <libfdt.h>
 
 // Check Val (unsigned) is a power of 2 (has only one bit set)
 #define IS_POWER_OF_2(Val)                (Val != 0 && ((Val & (Val - 1)) == 0))
+
+// Offset in Kernel Image
+#define KERNEL_SIZE_OFFSET                0x10
+#define KERNEL_MAGIC_OFFSET               0x38
+#define KERNEL_MAGIC                      "ARMd"
+
+#define BOOTIMG_HEADER_BLOCKS             1
+#define FDTIMG_HEADER_BLOCKS              1
+
+#define DEFAULT_UNCOMPRESS_BUFFER_SIZE    (32 * 1024 * 1024)
+
+#define IS_DEVICE_PATH_NODE(node,type,subtype) (((node)->Type == (type)) && ((node)->SubType == (subtype)))
 
 typedef struct {
   MEMMAP_DEVICE_PATH                      Node1;
@@ -54,8 +70,48 @@ STATIC CONST MEMORY_DEVICE_PATH MemoryDevicePathTemplate =
   } // End
 };
 
+STATIC
 EFI_STATUS
-AbootimgGetImgSize (
+CheckKernelImageHeader (
+  IN  VOID                  *Kernel
+  )
+{
+  if (Kernel == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+  /* Check magic number of uncompressed Kernel Image */
+  if (AsciiStrnCmp ((VOID *)((UINTN)Kernel + KERNEL_MAGIC_OFFSET), KERNEL_MAGIC, 4) == 0) {
+    return EFI_SUCCESS;
+  }
+  return EFI_INVALID_PARAMETER;
+}
+
+STATIC
+EFI_STATUS
+UncompressKernel (
+  IN  VOID                 *Source,
+  IN  UINTN                *SourceSize,
+  OUT VOID                **Kernel,
+  OUT UINTN                *KernelSize
+  )
+{
+  INTN            err;
+
+  *Kernel = AllocatePages (EFI_SIZE_TO_PAGES (DEFAULT_UNCOMPRESS_BUFFER_SIZE));
+  if (*Kernel == NULL) {
+    return EFI_BUFFER_TOO_SMALL;
+  }
+  *KernelSize = DEFAULT_UNCOMPRESS_BUFFER_SIZE;
+  err = GzipDecompress (Source, SourceSize, *Kernel, KernelSize);
+  if (err) {
+    return EFI_INVALID_PARAMETER;
+  }
+  return EFI_SUCCESS;
+}
+
+STATIC
+EFI_STATUS
+GetImgSize (
   IN  VOID    *BootImg,
   OUT UINTN   *ImgSize
   )
@@ -105,7 +161,7 @@ AbootimgGetKernelInfo (
 }
 
 EFI_STATUS
-AbootimgGetRamdiskInfo (
+GetRamdiskInfo (
   IN  VOID    *BootImg,
   OUT VOID   **Ramdisk,
   OUT UINTN   *RamdiskSize
@@ -128,15 +184,14 @@ AbootimgGetRamdiskInfo (
   *RamdiskSize = Header->RamdiskSize;
 
   if (Header->RamdiskSize != 0) {
-    *Ramdisk = (VOID *) (BootImgBytePtr
-                 + Header->PageSize
-                 + ALIGN_VALUE (Header->KernelSize, Header->PageSize));
+    *Ramdisk = (VOID *) (BootImgBytePtr + Header->PageSize +
+                 ALIGN_VALUE (Header->KernelSize, Header->PageSize));
   }
   return EFI_SUCCESS;
 }
 
 EFI_STATUS
-AbootimgGetKernelArgs (
+GetKernelArgs (
   IN  VOID    *BootImg,
   OUT CHAR8   *KernelArgs
   )
@@ -150,11 +205,45 @@ AbootimgGetKernelArgs (
   return EFI_SUCCESS;
 }
 
+STATIC
 EFI_STATUS
-AbootimgInstallFdt (
-  IN  VOID                  *BootImg,
-  IN  EFI_PHYSICAL_ADDRESS   FdtBase,
-  OUT VOID                  *KernelArgs
+GetAttachedFdt (
+  IN VOID                            *Kernel,
+  OUT VOID                           **Fdt
+  )
+{
+  UINTN                      RawKernelSize;
+  INTN                       err;
+
+  err = fdt_check_header ((VOID*)(UINTN)*Fdt);
+  if (err == 0) {
+    return EFI_SUCCESS;
+  }
+
+  // Get real kernel size.
+  RawKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KERNEL_IMAGE_STEXT_OFFSET) +
+                  *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
+
+  /* FDT is at the end of kernel image */
+  *Fdt = (VOID *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + RawKernelSize);
+
+  //
+  // Sanity checks on the FDT blob.
+  //
+  err = fdt_check_header ((VOID*)(UINTN)*Fdt);
+  if (err != 0) {
+    Print (L"ERROR: Device Tree header not valid (err:%d)\n", err);
+    return EFI_INVALID_PARAMETER;
+  }
+  return EFI_SUCCESS;
+}
+
+STATIC
+EFI_STATUS
+InstallFdt (
+  IN     VOID                  *BootImg,
+  IN     EFI_PHYSICAL_ADDRESS   FdtBase,
+  IN OUT VOID                  *KernelArgs
   )
 {
   VOID                      *Ramdisk;
@@ -169,11 +258,7 @@ AbootimgInstallFdt (
     return Status;
   }
 
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
-
-  Status = AbootimgGetRamdiskInfo (
+  Status = GetRamdiskInfo (
             BootImg,
             &Ramdisk,
             &RamdiskSize
@@ -181,26 +266,29 @@ AbootimgInstallFdt (
   if (EFI_ERROR (Status)) {
     return Status;
   }
-  Status = AbootimgGetKernelArgs (
+  Status = GetKernelArgs (
             BootImg,
             ImgKernelArgs
             );
   if (EFI_ERROR (Status)) {
     return Status;
   }
-  // Get kernel arguments from Android boot image
-  AsciiStrToUnicodeStrS (ImgKernelArgs, KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
-  // Set the ramdisk in command line arguments
-  UnicodeSPrint (
-    (CHAR16 *)KernelArgs + StrLen (KernelArgs), BOOTIMG_KERNEL_ARGS_SIZE,
-    L" initrd=0x%x,0x%x",
-    (UINTN)Ramdisk, (UINTN)RamdiskSize
-    );
 
-  // Append platform kernel arguments
-  Status = mAbootimg->AppendArgs (KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
-  if (EFI_ERROR (Status)) {
-    return Status;
+  if (ImgKernelArgs != NULL) {
+    // Get kernel arguments from Android boot image
+    AsciiStrToUnicodeStrS (ImgKernelArgs, KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
+    // Set the ramdisk in command line arguments
+    UnicodeSPrint (
+      (CHAR16 *)KernelArgs + StrLen (KernelArgs), BOOTIMG_KERNEL_ARGS_SIZE,
+      L" initrd=0x%x,0x%x",
+      (UINTN)Ramdisk, (UINTN)RamdiskSize
+      );
+
+    // Append platform kernel arguments
+    Status = mAbootimg->AppendArgs (KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
+    if (EFI_ERROR (Status)) {
+      return Status;
+    }
   }
 
   Status = mAbootimg->UpdateDtb (FdtBase, &NewFdtBase);
@@ -224,10 +312,355 @@ AbootimgInstallFdt (
   return Status;
 }
 
+STATIC
 EFI_STATUS
-AbootimgBoot (
+GetPartition (
+  IN  CHAR16                          *PathStr,
+  OUT EFI_BLOCK_IO_PROTOCOL           **BlockIo
+  )
+{
+  EFI_STATUS                          Status;
+  EFI_DEVICE_PATH_FROM_TEXT_PROTOCOL  *EfiDevicePathFromTextProtocol;
+  EFI_DEVICE_PATH                     *DevicePath;
+  EFI_DEVICE_PATH_PROTOCOL            *Node, *NextNode;
+  EFI_HANDLE                          Handle;
+
+  if (PathStr == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+  Status = gBS->LocateProtocol (&gEfiDevicePathFromTextProtocolGuid, NULL, (VOID **)&EfiDevicePathFromTextProtocol);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  DevicePath = (EFI_DEVICE_PATH *)EfiDevicePathFromTextProtocol->ConvertTextToDevicePath (PathStr);
+  if (DevicePath == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  /* Find DevicePath node of Partition */
+  NextNode = DevicePath;
+  while (1) {
+    Node = NextNode;
+    if (IS_DEVICE_PATH_NODE (Node, MEDIA_DEVICE_PATH, MEDIA_HARDDRIVE_DP)) {
+      break;
+    }
+    NextNode = NextDevicePathNode (Node);
+  }
+
+  Status = gBS->LocateDevicePath (&gEfiDevicePathProtocolGuid, &DevicePath, &Handle);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = gBS->OpenProtocol (
+                  Handle,
+                  &gEfiBlockIoProtocolGuid,
+                  (VOID **) BlockIo,
+                  gImageHandle,
+                  NULL,
+                  EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                  );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "Failed to get BlockIo: %r\n", Status));
+    return Status;
+  }
+
+  return Status;
+}
+
+STATIC
+EFI_STATUS
+LoadBootImage (
+  IN  CHAR16                         *BootPathStr,
+  OUT VOID                           **Buffer,
+  OUT UINTN                          *BufferSize
+  )
+{
+  EFI_STATUS                 Status;
+  EFI_BLOCK_IO_PROTOCOL      *BlockIo;
+  UINTN                      BootImageSize;
+
+  if ((Buffer == NULL) || (BufferSize == NULL)) {
+    return EFI_INVALID_PARAMETER;
+  }
+  // Read boot device to get kernel
+  Status = GetPartition (BootPathStr, &BlockIo);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  // Read both image header and kernel header
+  *Buffer = AllocatePages (EFI_SIZE_TO_PAGES (BlockIo->Media->BlockSize * BOOTIMG_HEADER_BLOCKS));
+  if (Buffer == NULL) {
+    return EFI_BUFFER_TOO_SMALL;
+  }
+  Status = BlockIo->ReadBlocks (
+                      BlockIo,
+                      BlockIo->Media->MediaId,
+                      0,
+                      BlockIo->Media->BlockSize * BOOTIMG_HEADER_BLOCKS,
+                      *Buffer
+                      );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  // Get the real size of boot image
+  Status = GetImgSize (*Buffer, &BootImageSize);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "Failed to get Abootimg Size: %r\n", Status));
+    return Status;
+  }
+  FreePages (*Buffer, EFI_SIZE_TO_PAGES (BlockIo->Media->BlockSize * BOOTIMG_HEADER_BLOCKS));
+  BootImageSize = ALIGN_VALUE (BootImageSize, BlockIo->Media->BlockSize);
+
+  /* Both PartitionStart and PartitionSize are counted as block size. */
+  *Buffer = AllocatePages (EFI_SIZE_TO_PAGES (BootImageSize));
+  if (Buffer == NULL) {
+    return EFI_BUFFER_TOO_SMALL;
+  }
+
+  /* Load the full boot.img */
+  Status = BlockIo->ReadBlocks (
+                      BlockIo,
+                      BlockIo->Media->MediaId,
+                      0,
+                      BootImageSize,
+                      *Buffer
+                      );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((EFI_D_ERROR, "Failed to read blocks: %r\n", Status));
+    return Status;
+  }
+  return Status;
+}
+
+/*
+ * Boot from RAM
+ */
+STATIC
+EFI_STATUS
+BootFromRam (
+  IN     VOID                   *Buffer,
+  IN     CHAR16                 *BootPathStr,
+  IN     CHAR16                 *FdtPathStr,
+  IN OUT VOID                   *KernelArgs,
+     OUT VOID                   **Kernel,
+     OUT UINTN                  *KernelSize
+  )
+{
+  EFI_STATUS                 Status;
+  VOID                       *BootImage = NULL;
+  VOID                       *CompressedKernel;
+  VOID                       *Fdt;
+  VOID                       *Ramdisk;
+  VOID                       *StoredKernel;
+  UINTN                      BootImageSize;
+  UINTN                      CompressedKernelSize;
+  UINTN                      RamdiskSize;
+  UINTN                      StoredKernelSize;
+
+  Status = AbootimgGetKernelInfo (Buffer, Kernel, KernelSize);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "Failed to get kernel information from Android Boot Image: %r\n", Status));
+    return Status;
+  }
+  Status = CheckKernelImageHeader (*Kernel);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "The kernel is not raw format.\n"));
+    CompressedKernel = *Kernel;
+    CompressedKernelSize = *KernelSize;
+    Status = UncompressKernel (
+               CompressedKernel,
+               &CompressedKernelSize,
+               Kernel,
+               KernelSize
+               );
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "Failed to uncompress kernel with gzip format: %r\n", Status));
+      return Status;
+    }
+    // gzip kernel with attached FDT
+    Fdt = CompressedKernel + CompressedKernelSize;
+    Status = GetAttachedFdt (*Kernel, &Fdt);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "Failed to load FDT from gzip kernel\n"));
+      if (BootImage == NULL) {
+        Status = LoadBootImage (BootPathStr, &BootImage, &BootImageSize);
+        if (EFI_ERROR (Status)) {
+          DEBUG ((DEBUG_ERROR, "Failed to load boot image from partition: %r\n", Status));
+          return Status;
+        }
+      }
+      // Get FDT from the end of kernel that is located in partition
+      Status = AbootimgGetKernelInfo (BootImage, &StoredKernel, &StoredKernelSize);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "Failed to get kernel information from stored Android Boot Image: %r\n", Status));
+        return Status;
+      }
+      // Get FDT from the end of kernel that is located in partition if it's raw kernel
+      Status = CheckKernelImageHeader (StoredKernel);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "Stored kernel image is not raw format: %r\n", Status));
+        CompressedKernel = StoredKernel;
+        CompressedKernelSize = StoredKernelSize;
+        Status = UncompressKernel (
+                   CompressedKernel,
+                   &CompressedKernelSize,
+                   &StoredKernel,
+                   &StoredKernelSize
+                   );
+        if (EFI_ERROR (Status)) {
+          DEBUG ((DEBUG_ERROR, "Failed to uncompress stored kernel with gzip format: %r\n", Status));
+          return Status;
+        }
+        // Get FDT from the end of stored gzip kernel that is located in partition
+        Fdt = CompressedKernel + CompressedKernelSize;
+      }
+      Status = GetAttachedFdt (StoredKernel, &Fdt);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "Failed to get attached FDT from the end of stored kernel: %r\n", Status));
+        return Status;
+      }
+    }
+  } else {
+    // raw kernel with attached FDT
+    // Get FDT from the end of raw kernel that is located in RAM
+    Status = GetAttachedFdt (*Kernel, &Fdt);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "Failed to get attached FDT from the end of raw kernel: %r\n", Status));
+      if (BootImage == NULL) {
+        Status = LoadBootImage (BootPathStr, &BootImage, &BootImageSize);
+        if (EFI_ERROR (Status)) {
+          DEBUG ((DEBUG_ERROR, "Failed to load boot image from partition: %r\n", Status));
+          return Status;
+        }
+      }
+      // Get FDT from the end of raw kernel that is located in partition
+      Status = AbootimgGetKernelInfo (BootImage, &StoredKernel, &StoredKernelSize);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "Failed to get kernel information from stored Android Boot Image: %r\n", Status));
+        return Status;
+      }
+      // Get FDT from the end of raw kernel that is located in partition
+      Status = CheckKernelImageHeader (StoredKernel);
+      if (EFI_ERROR (Status)) {
+          DEBUG ((DEBUG_ERROR, "Wrong kernel image: %r\n", Status));
+          return Status;
+      }
+      Status = GetAttachedFdt (StoredKernel, &Fdt);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "Failed to get attached FDT from the end of stored raw kernel: %r\n", Status));
+        return Status;
+      }
+    }
+  }
+  // Get ramdisk from boot image in RAM
+  Status = GetRamdiskInfo (Buffer, &Ramdisk, &RamdiskSize);
+  if (RamdiskSize == 0) {
+    if (BootImage == NULL) {
+      Status = LoadBootImage (BootPathStr, &BootImage, &BootImageSize);
+      if (EFI_ERROR (Status)) {
+        DEBUG ((DEBUG_ERROR, "Failed to load boot image from partition: %r\n", Status));
+        return Status;
+      }
+    }
+    // Get ramdisk from boot image in partition
+    Status = GetRamdiskInfo (BootImage, &Ramdisk, &RamdiskSize);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "Failed to get ramdisk from boot image: %r\n", Status));
+      return Status;
+    }
+    Status = InstallFdt (BootImage, (UINTN)Fdt, KernelArgs);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "Failed to install FDT: %r\n", Status));
+      return Status;
+    }
+  } else {
+    Status = InstallFdt (Buffer, (UINTN)Fdt, KernelArgs);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "Failed to install FDT: %r\n", Status));
+      return Status;
+    }
+  }
+  return EFI_SUCCESS;
+}
+
+/*
+ * Boot from partition
+ */
+STATIC
+EFI_STATUS
+BootFromPartition (
+  IN     CHAR16              *BootPathStr,
+  IN     CHAR16              *FdtPathStr,
+  IN OUT VOID                *KernelArgs,
+     OUT VOID                **Kernel,
+     OUT UINTN               *KernelSize
+  )
+{
+  EFI_STATUS                 Status;
+  VOID                       *BootImage;
+  VOID                       *CompressedKernel;
+  VOID                       *Fdt;
+  VOID                       *Ramdisk;
+  UINTN                      BootImageSize;
+  UINTN                      CompressedKernelSize;
+  UINTN                      RamdiskSize;
+
+  Status = LoadBootImage (BootPathStr, &BootImage, &BootImageSize);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "Failed to load boot image from boot partition: %r\n", Status));
+    return Status;
+  }
+  Status = AbootimgGetKernelInfo (BootImage, Kernel, KernelSize);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "Failed to get kernel information from Android Boot Image: %r\n", Status));
+    return Status;
+  }
+  Status = CheckKernelImageHeader (*Kernel);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "The kernel image is not raw format: %r\n", Status));
+    CompressedKernel = *Kernel;
+    CompressedKernelSize = *KernelSize;
+    Status = UncompressKernel (
+               CompressedKernel,
+               &CompressedKernelSize,
+               Kernel,
+               KernelSize
+               );
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "Failed to uncompress kernel with gzip format: %r\n", Status));
+      return Status;
+    }
+    // gzip kernel with attached FDT
+    Fdt = CompressedKernel + CompressedKernelSize;
+  }
+  // Get FDT from the end of kernel in boot image
+  Status = GetAttachedFdt (*Kernel, &Fdt);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "Failed to get attached FDT from the end of raw kernel: %r\n", Status));
+    return Status;
+  }
+  // Get ramdisk from boot image
+  Status = GetRamdiskInfo (BootImage, &Ramdisk, &RamdiskSize);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "Failed to get ramdisk from boot image: %r\n", Status));
+    return Status;
+  }
+  Status = InstallFdt (BootImage, (UINTN)Fdt, KernelArgs);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "Failed to install FDT: %r\n", Status));
+    return Status;
+  }
+  return EFI_SUCCESS;
+}
+
+EFI_STATUS
+AbootimgBootRam (
   IN VOID                            *Buffer,
-  IN UINTN                            BufferSize
+  IN UINTN                            BufferSize,
+  IN CHAR16                          *BootPathStr,
+  IN CHAR16                          *FdtPathStr
   )
 {
   EFI_STATUS                          Status;
@@ -235,43 +668,19 @@ AbootimgBoot (
   UINTN                               KernelSize;
   MEMORY_DEVICE_PATH                  KernelDevicePath;
   EFI_HANDLE                          ImageHandle;
-  EFI_PHYSICAL_ADDRESS                FdtBase;
-  VOID                               *NewKernelArg;
+  VOID                               *NewKernelArgs;
   EFI_LOADED_IMAGE_PROTOCOL          *ImageInfo;
-  ANDROID_BOOTIMG_HEADER             *Header;
 
-  Header = Buffer;
-  if (Header->KernelArgs[0] == '\0') {
-    // It's not valid boot image since it's lack of kernel args.
-    return EFI_INVALID_PARAMETER;
-  }
-  Status = AbootimgGetKernelInfo (
-            Buffer,
-            &Kernel,
-            &KernelSize
-            );
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
-
-  /* For flatten image, Fdt is attached at the end of kernel.
-     Get real kernel size.
-   */
-  KernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KERNEL_IMAGE_STEXT_OFFSET) +
-               *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
-
-  NewKernelArg = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE << 1);
-  if (NewKernelArg == NULL) {
+  NewKernelArgs = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE << 1);
+  if (NewKernelArgs == NULL) {
     DEBUG ((DEBUG_ERROR, "Fail to allocate memory\n"));
     return EFI_OUT_OF_RESOURCES;
   }
 
-  /* FDT is at the end of kernel image */
-  FdtBase = (EFI_PHYSICAL_ADDRESS)(UINTN)Kernel + KernelSize;
-  Status = AbootimgInstallFdt (Buffer, FdtBase, NewKernelArg);
+  Status = BootFromRam (Buffer, BootPathStr, FdtPathStr, NewKernelArgs, &Kernel, &KernelSize);
   if (EFI_ERROR (Status)) {
-    FreePool (NewKernelArg);
-    return EFI_INVALID_PARAMETER;
+    DEBUG ((DEBUG_ERROR, "Failed to boot from RAM: %r\n", Status));
+    return Status;
   }
 
   CopyMem (&KernelDevicePath, &MemoryDevicePathTemplate, sizeof (MemoryDevicePathTemplate));
@@ -285,8 +694,8 @@ AbootimgBoot (
 
   // Set kernel arguments
   Status = gBS->HandleProtocol (ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID **) &ImageInfo);
-  ImageInfo->LoadOptions = NewKernelArg;
-  ImageInfo->LoadOptionsSize = StrLen (NewKernelArg) * sizeof (CHAR16);
+  ImageInfo->LoadOptions = NewKernelArgs;
+  ImageInfo->LoadOptionsSize = StrLen (NewKernelArgs) * sizeof (CHAR16);
 
   // Before calling the image, enable the Watchdog Timer for  the 5 Minute period
   gBS->SetWatchdogTimer (5 * 60, 0x0000, 0x00, NULL);
@@ -298,88 +707,44 @@ AbootimgBoot (
 }
 
 EFI_STATUS
-AbootimgBootKernel (
-  IN VOID                            *Buffer,
-  IN UINTN                            BufferSize,
-  IN VOID                            *ImgBuffer,
-  IN UINTN                            ImgBufferSize
+AbootimgBootPartition (
+  IN CHAR16                          *BootPathStr,
+  IN CHAR16                          *FdtPathStr
   )
 {
   EFI_STATUS                          Status;
-  VOID                               *ImgKernel;
-  UINTN                               ImgKernelSize;
-  VOID                               *DwnldKernel;
-  UINTN                               DwnldKernelSize;
-  EFI_HANDLE                          ImageHandle;
-  EFI_PHYSICAL_ADDRESS                FdtBase;
-  VOID                               *NewKernelArg;
-  EFI_LOADED_IMAGE_PROTOCOL          *ImageInfo;
+  VOID                               *Kernel;
+  UINTN                               KernelSize;
   MEMORY_DEVICE_PATH                  KernelDevicePath;
-  INTN                                err;
+  EFI_HANDLE                          ImageHandle;
+  VOID                               *NewKernelArgs;
+  EFI_LOADED_IMAGE_PROTOCOL          *ImageInfo;
 
-  Status = AbootimgGetKernelInfo (
-            Buffer,
-            &DwnldKernel,
-            &DwnldKernelSize
-            );
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
-
-  Status = AbootimgGetKernelInfo (
-            ImgBuffer,
-            &ImgKernel,
-            &ImgKernelSize
-            );
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
-
-  /*
-   * FDT location:
-   *   1. at the end of flattern image.
-   *   2. in the boot image of storage device.
-   */
-  DwnldKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)DwnldKernel + KERNEL_IMAGE_STEXT_OFFSET) +
-                    *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)DwnldKernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
-  FdtBase = (EFI_PHYSICAL_ADDRESS)(UINTN)DwnldKernel + DwnldKernelSize;
-  err = fdt_check_header ((VOID*)(UINTN)FdtBase);
-  if (err != 0) {
-    // Can not find the device tree header at the end of downloaded kernel
-    // Check FDT at the end of kernel image of boot image instead.
-    ImgKernelSize = *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_STEXT_OFFSET) +
-                    *(UINT32 *)((EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + KERNEL_IMAGE_RAW_SIZE_OFFSET);
-    FdtBase = (EFI_PHYSICAL_ADDRESS)(UINTN)ImgKernel + ImgKernelSize;
-    err = fdt_check_header ((VOID*)(UINTN)FdtBase);
-  }
-  if (err != 0) {
-    Print (L"ERROR: Device Tree header not valid (err:%d)\n", err);
-    return EFI_INVALID_PARAMETER;
-  }
-  NewKernelArg = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE << 1);
-  if (NewKernelArg == NULL) {
+  NewKernelArgs = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE << 1);
+  if (NewKernelArgs == NULL) {
     DEBUG ((DEBUG_ERROR, "Fail to allocate memory\n"));
     return EFI_OUT_OF_RESOURCES;
   }
-  Status = AbootimgInstallFdt (ImgBuffer, FdtBase, NewKernelArg);
+
+  Status = BootFromPartition (BootPathStr, FdtPathStr, NewKernelArgs, &Kernel, &KernelSize);
   if (EFI_ERROR (Status)) {
-    FreePool (NewKernelArg);
-    return EFI_INVALID_PARAMETER;
+    DEBUG ((DEBUG_ERROR, "Failed to boot from partition: %r\n", Status));
+    return Status;
   }
 
   CopyMem (&KernelDevicePath, &MemoryDevicePathTemplate, sizeof (MemoryDevicePathTemplate));
 
   // Have to cast to UINTN before casting to EFI_PHYSICAL_ADDRESS in order to
   // appease GCC.
-  KernelDevicePath.Node1.StartingAddress = (EFI_PHYSICAL_ADDRESS)(UINTN) DwnldKernel;
-  KernelDevicePath.Node1.EndingAddress   = (EFI_PHYSICAL_ADDRESS)(UINTN) DwnldKernel + DwnldKernelSize;
+  KernelDevicePath.Node1.StartingAddress = (EFI_PHYSICAL_ADDRESS)(UINTN) Kernel;
+  KernelDevicePath.Node1.EndingAddress   = (EFI_PHYSICAL_ADDRESS)(UINTN) Kernel + KernelSize;
 
-  Status = gBS->LoadImage (TRUE, gImageHandle, (EFI_DEVICE_PATH *)&KernelDevicePath, (VOID*)(UINTN)DwnldKernel, DwnldKernelSize, &ImageHandle);
+  Status = gBS->LoadImage (TRUE, gImageHandle, (EFI_DEVICE_PATH *)&KernelDevicePath, (VOID*)(UINTN)Kernel, KernelSize, &ImageHandle);
 
   // Set kernel arguments
   Status = gBS->HandleProtocol (ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID **) &ImageInfo);
-  ImageInfo->LoadOptions = NewKernelArg;
-  ImageInfo->LoadOptionsSize = StrLen (NewKernelArg) * sizeof (CHAR16);
+  ImageInfo->LoadOptions = NewKernelArgs;
+  ImageInfo->LoadOptionsSize = StrLen (NewKernelArgs) * sizeof (CHAR16);
 
   // Before calling the image, enable the Watchdog Timer for  the 5 Minute period
   gBS->SetWatchdogTimer (5 * 60, 0x0000, 0x00, NULL);
