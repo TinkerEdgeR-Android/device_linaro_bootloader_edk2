@@ -378,7 +378,7 @@ LoadBootImage (
 {
   EFI_STATUS                 Status;
   EFI_BLOCK_IO_PROTOCOL      *BlockIo;
-  UINTN                      BootImageSize;
+  UINTN                      BootImageSize = 0;
 
   if ((Buffer == NULL) || (BufferSize == NULL)) {
     return EFI_INVALID_PARAMETER;
