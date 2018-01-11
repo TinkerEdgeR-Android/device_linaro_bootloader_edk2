@@ -246,6 +246,7 @@ InstallFdt (
   IN OUT VOID                  *KernelArgs
   )
 {
+  VOID                      *NewRamdisk;
   VOID                      *Ramdisk;
   UINTN                      RamdiskSize;
   CHAR8                      ImgKernelArgs[BOOTIMG_KERNEL_ARGS_SIZE];
@@ -274,6 +275,11 @@ InstallFdt (
     return Status;
   }
 
+  NewRamdisk = AllocateReservedPool (RamdiskSize);
+  if (NewRamdisk == NULL) {
+    return EFI_BUFFER_TOO_SMALL;
+  }
+  CopyMem (NewRamdisk, Ramdisk, RamdiskSize);
   if (ImgKernelArgs != NULL) {
     // Get kernel arguments from Android boot image
     AsciiStrToUnicodeStrS (ImgKernelArgs, KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
@@ -281,7 +287,7 @@ InstallFdt (
     UnicodeSPrint (
       (CHAR16 *)KernelArgs + StrLen (KernelArgs), BOOTIMG_KERNEL_ARGS_SIZE,
       L" initrd=0x%x,0x%x",
-      (UINTN)Ramdisk, (UINTN)RamdiskSize
+      (UINTN)NewRamdisk, (UINTN)RamdiskSize
       );
 
     // Append platform kernel arguments
