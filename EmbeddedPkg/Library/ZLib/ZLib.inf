@@ -41,6 +41,7 @@
   ZLib.c
 
 [Packages]
+  StdLib/StdLib.dec
   EmbeddedPkg/EmbeddedPkg.dec
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
