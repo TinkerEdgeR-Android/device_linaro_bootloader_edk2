@@ -36,6 +36,7 @@
   PrintLib
   UefiBootServicesTableLib
   UefiLib
+  ZLib
 
 [Packages]
   MdePkg/MdePkg.dec
