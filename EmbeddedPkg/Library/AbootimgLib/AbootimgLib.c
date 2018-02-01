@@ -95,12 +95,19 @@ UncompressKernel (
   OUT UINTN                *KernelSize
   )
 {
-  INTN            err;
+  EFI_STATUS                Status;
+  EFI_PHYSICAL_ADDRESS      Address;
+  INTN                      err;
 
-  *Kernel = AllocatePages (EFI_SIZE_TO_PAGES (DEFAULT_UNCOMPRESS_BUFFER_SIZE));
-  if (*Kernel == NULL) {
-    return EFI_BUFFER_TOO_SMALL;
+  Status = gBS->AllocatePages (
+                  AllocateAnyPages, EfiBootServicesData,
+                  EFI_SIZE_TO_PAGES (DEFAULT_UNCOMPRESS_BUFFER_SIZE),
+                  &Address
+                  );
+  if (EFI_ERROR (Status)) {
+    return Status;
   }
+  *Kernel = (VOID *)(UINTN)Address;
   *KernelSize = DEFAULT_UNCOMPRESS_BUFFER_SIZE;
   err = GzipDecompress (Source, SourceSize, *Kernel, KernelSize);
   if (err) {
@@ -240,15 +247,56 @@ GetAttachedFdt (
 
 STATIC
 EFI_STATUS
+AllocateRamdisk (
+  IN     VOID                  *BootImg,
+  IN OUT VOID                  *KernelArgs
+  )
+{
+  EFI_STATUS                Status;
+  ANDROID_BOOTIMG_HEADER   *Header;
+  EFI_PHYSICAL_ADDRESS      Address;
+  UINT8                    *BootImgBytePtr;
+  VOID                     *Source;
+
+  Header = (ANDROID_BOOTIMG_HEADER *) BootImg;
+  // Cast to UINT8 so we can do pointer arithmetic
+  BootImgBytePtr = (UINT8 *) BootImg;
+
+  if (AsciiStrnCmp (Header->BootMagic, BOOT_MAGIC, BOOT_MAGIC_LENGTH) != 0) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  ASSERT (IS_POWER_OF_2 (Header->PageSize));
+
+  Address = (EFI_PHYSICAL_ADDRESS)(UINTN)Header->RamdiskAddress;
+  Status = gBS->AllocatePages (
+                  AllocateAddress, EfiBootServicesData,
+                  EFI_SIZE_TO_PAGES (Header->RamdiskSize), &Address);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  Source = (VOID *) (BootImgBytePtr + Header->PageSize +
+                     ALIGN_VALUE (Header->KernelSize, Header->PageSize));
+  CopyMem ((VOID *)(UINTN)Address, Source, Header->RamdiskSize);
+  // Set the ramdisk in command line arguments
+  if (KernelArgs != NULL) {
+    UnicodeSPrint (
+      (CHAR16 *)KernelArgs + StrLen (KernelArgs), BOOTIMG_KERNEL_ARGS_SIZE,
+      L" initrd=0x%x,0x%x",
+      (UINTN)Address, Header->RamdiskSize
+      );
+  }
+  return Status;
+}
+
+STATIC
+EFI_STATUS
 InstallFdt (
   IN     VOID                  *BootImg,
   IN     EFI_PHYSICAL_ADDRESS   FdtBase,
   IN OUT VOID                  *KernelArgs
   )
 {
-  VOID                      *NewRamdisk;
-  VOID                      *Ramdisk;
-  UINTN                      RamdiskSize;
   CHAR8                      ImgKernelArgs[BOOTIMG_KERNEL_ARGS_SIZE];
   INTN                       err;
   EFI_STATUS                 Status;
@@ -259,14 +307,6 @@ InstallFdt (
     return Status;
   }
 
-  Status = GetRamdiskInfo (
-            BootImg,
-            &Ramdisk,
-            &RamdiskSize
-            );
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
   Status = GetKernelArgs (
             BootImg,
             ImgKernelArgs
@@ -275,26 +315,18 @@ InstallFdt (
     return Status;
   }
 
-  NewRamdisk = AllocateReservedPool (RamdiskSize);
-  if (NewRamdisk == NULL) {
-    return EFI_BUFFER_TOO_SMALL;
-  }
-  CopyMem (NewRamdisk, Ramdisk, RamdiskSize);
   if (ImgKernelArgs != NULL) {
     // Get kernel arguments from Android boot image
     AsciiStrToUnicodeStrS (ImgKernelArgs, KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
-    // Set the ramdisk in command line arguments
-    UnicodeSPrint (
-      (CHAR16 *)KernelArgs + StrLen (KernelArgs), BOOTIMG_KERNEL_ARGS_SIZE,
-      L" initrd=0x%x,0x%x",
-      (UINTN)NewRamdisk, (UINTN)RamdiskSize
-      );
-
     // Append platform kernel arguments
     Status = mAbootimg->AppendArgs (KernelArgs, BOOTIMG_KERNEL_ARGS_SIZE);
     if (EFI_ERROR (Status)) {
       return Status;
     }
+  }
+  Status = AllocateRamdisk (BootImg, KernelArgs);
+  if (EFI_ERROR (Status)) {
+    return Status;
   }
 
   Status = mAbootimg->UpdateDtb (FdtBase, &NewFdtBase);
@@ -385,6 +417,7 @@ LoadBootImage (
   EFI_STATUS                 Status;
   EFI_BLOCK_IO_PROTOCOL      *BlockIo;
   UINTN                      BootImageSize = 0;
+  EFI_PHYSICAL_ADDRESS       Address;
 
   if ((Buffer == NULL) || (BufferSize == NULL)) {
     return EFI_INVALID_PARAMETER;
@@ -395,10 +428,15 @@ LoadBootImage (
     return Status;
   }
   // Read both image header and kernel header
-  *Buffer = AllocatePages (EFI_SIZE_TO_PAGES (BlockIo->Media->BlockSize * BOOTIMG_HEADER_BLOCKS));
-  if (Buffer == NULL) {
-    return EFI_BUFFER_TOO_SMALL;
+  Status = gBS->AllocatePages (
+                  AllocateAnyPages, EfiBootServicesData,
+                  EFI_SIZE_TO_PAGES (BlockIo->Media->BlockSize * BOOTIMG_HEADER_BLOCKS),
+                  &Address
+                  );
+  if (EFI_ERROR (Status)) {
+    return Status;
   }
+  *Buffer = (VOID *)(UINTN)Address;
   Status = BlockIo->ReadBlocks (
                       BlockIo,
                       BlockIo->Media->MediaId,
@@ -416,15 +454,22 @@ LoadBootImage (
     DEBUG ((DEBUG_ERROR, "Failed to get Abootimg Size: %r\n", Status));
     return Status;
   }
-  FreePages (*Buffer, EFI_SIZE_TO_PAGES (BlockIo->Media->BlockSize * BOOTIMG_HEADER_BLOCKS));
+  gBS->FreePages (
+         (EFI_PHYSICAL_ADDRESS)(UINTN)*Buffer,
+         EFI_SIZE_TO_PAGES (BlockIo->Media->BlockSize * BOOTIMG_HEADER_BLOCKS)
+         );
   BootImageSize = ALIGN_VALUE (BootImageSize, BlockIo->Media->BlockSize);
 
   /* Both PartitionStart and PartitionSize are counted as block size. */
-  *Buffer = AllocatePages (EFI_SIZE_TO_PAGES (BootImageSize));
-  if (Buffer == NULL) {
-    return EFI_BUFFER_TOO_SMALL;
+  Status = gBS->AllocatePages (
+                  AllocateAnyPages, EfiBootServicesData,
+                  EFI_SIZE_TO_PAGES (BootImageSize), &Address
+                  );
+  if (EFI_ERROR (Status)) {
+    return Status;
   }
 
+  *Buffer = (VOID *)(UINTN)Address;
   /* Load the full boot.img */
   Status = BlockIo->ReadBlocks (
                       BlockIo,
@@ -666,12 +711,19 @@ AbootimgBootRam (
   EFI_HANDLE                          ImageHandle;
   VOID                               *NewKernelArgs;
   EFI_LOADED_IMAGE_PROTOCOL          *ImageInfo;
+  EFI_PHYSICAL_ADDRESS                Address;
 
-  NewKernelArgs = AllocateZeroPool (BOOTIMG_KERNEL_ARGS_SIZE << 1);
-  if (NewKernelArgs == NULL) {
-    DEBUG ((DEBUG_ERROR, "Fail to allocate memory\n"));
-    return EFI_OUT_OF_RESOURCES;
+  Status = gBS->AllocatePages (
+                  AllocateAnyPages, EfiBootServicesData,
+                  EFI_SIZE_TO_PAGES (BOOTIMG_KERNEL_ARGS_SIZE << 1),
+                  &Address
+                  );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "Failed to allocate memory for kernel args: %r\n", Status));
+    return Status;
   }
+  NewKernelArgs = (VOID *)(UINTN)Address;
+  SetMem (NewKernelArgs, EFI_SIZE_TO_PAGES (BOOTIMG_KERNEL_ARGS_SIZE << 1), 0);
 
   Status = BootFromRam (Buffer, BootPathStr, FdtPathStr, NewKernelArgs, &Kernel, &KernelSize);
   if (EFI_ERROR (Status)) {
